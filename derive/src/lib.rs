@@ -14,7 +14,7 @@ pub fn derive_with_lifetime(input: TokenStream) -> TokenStream {
     ex_generics.params.insert(0, ex_lifetime_param.clone());
     alt_generics.params[0] = ex_lifetime_param.clone();
     TokenStream::from(quote! {
-        impl #ex_generics WithLifetime<#ex_lifetime> for #name #ty_generics #where_clause {
+        impl #ex_generics ::fortify::WithLifetime<#ex_lifetime> for #name #ty_generics #where_clause {
             type Target = #name #alt_generics;
         }
     })

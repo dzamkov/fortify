@@ -2,18 +2,18 @@
 //! This crate provides the [`Fortify`] wrapper type. When used with a borrowing type (i.e. a type
 //! with a lifetime parameter) it allows values of that type to reference arbitrary data owned by
 //! the `Fortify` itself.
-//! 
+//!
 //! # Example
 //! ```
 //! use fortify::*;
-//! 
+//!
 //! // Define a borrowing type.
 //! #[derive(WithLifetime)]
 //! struct Example<'a> {
 //!    a: &'a i32,
 //!    b: &'a mut i32,
 //! }
-//! 
+//!
 //! // Construct a fortified value that makes an "external" reference to `a` and an "internal"
 //! // reference to `b`, which is owned by the Fortify.
 //! let a = 1;
@@ -25,7 +25,7 @@
 //!         b: &mut b
 //!     };
 //! };
-//! 
+//!
 //! // Use `with_mut` for general mutable access to the wrapped value. Note that the reference
 //! // to `b` is still valid even though `b` is not in scope in this block.
 //! example.with_mut(|example| {
@@ -35,6 +35,7 @@
 //!     assert_eq!(*example.b, 3);
 //! });
 //! ```
+extern crate self as fortify;
 pub use fortify_derive::*;
 use std::future::Future;
 use std::intrinsics::transmute;
@@ -77,7 +78,7 @@ impl<T> Fortify<T> {
     /// Creates a [`Fortify`] by explicitly providing its owned data and constructing its value
     /// from that using a closure. The closure must call [`FortifyBuilder::provide`] to provide the
     /// value of the `Fortify`.
-    /// 
+    ///
     /// # Example
     /// ```
     /// use fortify::Fortify;
@@ -116,9 +117,8 @@ impl<T> Fortify<T> {
                 data_raw: Box::into_raw(owned) as *mut (),
                 data_drop_fn: drop_box_from_raw::<O>,
             },
-            None => panic!("FortifyBuilder::provide must be called to provide a value")
+            None => panic!("FortifyBuilder::provide must be called to provide a value"),
         }
-        
     }
 
     /// Creates a [`Fortify`] by using a [`Future`] to construct the `Fortify`'s value. As soon
@@ -211,7 +211,7 @@ impl<T> Fortify<T> {
 impl<'a, T> Fortify<&'a T> {
     /// Creates a [`Fortify`] by taking ownership of a [`Box`] and wrapping a reference to
     /// the value inside it.
-    /// 
+    ///
     /// # Example
     /// ```
     /// use fortify::Fortify;
@@ -232,7 +232,7 @@ impl<'a, T> Fortify<&'a T> {
 impl<'a, T> Fortify<&'a mut T> {
     /// Creates a [`Fortify`] by taking ownership of a [`Box`] and wrapping a mutable reference to
     /// the value inside it.
-    /// 
+    ///
     /// # Example
     /// ```
     /// use fortify::Fortify;
@@ -266,6 +266,32 @@ impl<'a, T> From<Box<T>> for Fortify<&'a T> {
 impl<'a, T> From<Box<T>> for Fortify<&'a mut T> {
     fn from(value: Box<T>) -> Self {
         Fortify::new_box_mut(value)
+    }
+}
+
+impl<T: Default> Default for Fortify<T> {
+    fn default() -> Self {
+        Fortify::new(T::default())
+    }
+}
+
+impl<T> std::fmt::Debug for Fortify<T>
+where
+    for<'a> T: WithLifetime<'a>,
+    for<'a> <T as WithLifetime<'a>>::Target: std::fmt::Debug,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.with_ref(|inner| inner.fmt(f))
+    }
+}
+
+impl<T> std::fmt::Display for Fortify<T>
+where
+    for<'a> T: WithLifetime<'a>,
+    for<'a> <T as WithLifetime<'a>>::Target: std::fmt::Display,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.with_ref(|inner| inner.fmt(f))
     }
 }
 
@@ -354,6 +380,18 @@ impl<'a, 'b, T: 'b + ?Sized> WithLifetime<'b> for &'a mut T {
     type Target = &'b mut T;
 }
 
+impl<'a, T: WithLifetime<'a> + ?Sized> WithLifetime<'a> for Box<T> {
+    type Target = Box<<T as WithLifetime<'a>>::Target>;
+}
+
+impl<'a, T: WithLifetime<'a>, const N: usize> WithLifetime<'a> for [T; N] {
+    type Target = [<T as WithLifetime<'a>>::Target; N];
+}
+
+impl<'a, T: WithLifetime<'a>> WithLifetime<'a> for Fortify<T> {
+    type Target = Fortify<<T as WithLifetime<'a>>::Target>;
+}
+
 impl<'a, A: WithLifetime<'a>, B: WithLifetime<'a>> WithLifetime<'a> for (A, B) {
     type Target = (
         <A as WithLifetime<'a>>::Target,
@@ -414,3 +452,6 @@ macro_rules! fortify {
         })
     };
 }
+
+#[cfg(test)]
+mod tests;
