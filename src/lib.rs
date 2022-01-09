@@ -7,7 +7,7 @@
 //! ```
 //! use fortify::*;
 //! 
-//! // Define a borrowing type. Deriving `WithLifetime` sets the primary lifetime as `'a`.
+//! // Define a borrowing type.
 //! #[derive(WithLifetime)]
 //! struct Example<'a> {
 //!    a: &'a i32,
@@ -49,13 +49,14 @@ use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 /// # Example
 /// ```
 /// use fortify::*;
-/// let own_str: Fortify<&str> = fortify! {
+/// let example: Fortify<&'static str> = fortify! {
 ///     let mut str = String::new();
 ///     str.push_str("Foo");
 ///     str.push_str("Bar");
 ///     yield str.as_str();
 /// };
-/// assert_eq!(own_str.borrow(), &"FooBar");
+/// example.with_ref(|s| assert_eq!(s, &"FooBar"));
+/// assert_eq!(example.borrow(), &"FooBar");
 /// ```
 pub struct Fortify<T> {
     value: ManuallyDrop<T>,
