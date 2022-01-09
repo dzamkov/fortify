@@ -58,7 +58,7 @@ impl Drop for Device {
     }
 }
 
-/// Identifies a texture resource owned by the [`Device`].
+/// Identifies a texture resource owned by a [`Device`].
 pub struct Texture<'a> {
     device: &'a Device,
     id: u32
