@@ -13,4 +13,4 @@ categories = ["memory-management", "rust-patterns"]
 members = ["derive"]
 
 [dependencies]
-fortify_derive = { path = "derive" }
+fortify_derive = { path = "derive", version = "0.1.0" }
