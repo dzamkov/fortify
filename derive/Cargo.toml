@@ -2,6 +2,10 @@
 name = "fortify_derive"
 version = "0.1.0"
 edition = "2021"
+authors = ["Dmitry Zamkov <dmitry94@gmail.com>"]
+description = "Derive macros for fortify"
+repository = "https://github.com/dzamkov/fortify"
+license = "MIT OR Apache-2.0"
 
 [lib]
 name = "fortify_derive"
