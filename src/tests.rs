@@ -28,7 +28,10 @@ fn test_complex() {
 #[test]
 fn test_debug() {
     #[derive(WithLifetime, Debug)]
-    struct Test<'a> { a: &'a i32, b: &'a str }
+    struct Test<'a> {
+        a: &'a i32,
+        b: &'a str,
+    }
     let fortified = fortify! {
         let a = 13;
         let b = "Foo";

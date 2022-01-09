@@ -2,6 +2,12 @@
 name = "fortify"
 version = "0.1.0"
 edition = "2021"
+authors = ["Dmitry Zamkov <dmitry94@gmail.com>"]
+description = "A simple and convenient way to bundle owned data with a borrowing type"
+repository = "https://github.com/dzamkov/fortify"
+license = "MIT OR Apache-2.0"
+keywords = ["reference", "lifetime", "ownership"]
+categories = ["memory-management", "rust-patterns"]
 
 [workspace]
 members = ["derive"]

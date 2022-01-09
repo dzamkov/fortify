@@ -364,7 +364,7 @@ impl Future for FortifyBuilderFuture {
 }
 
 /// Indicates that a type has a "primary" lifetime parameter and that parameter can be
-/// replaced with another lifetime (`'a`) to produce the type [`WithLifetime<'a>::Target`]. This
+/// replaced with another lifetime (`'a`) to produce the type `WithLifetime<'a>::Target`. This
 /// trait can be automatically derived. When doing so, the first lifetime parameter in the
 /// parameters list will be treated as the "primary" lifetime parameter.
 pub trait WithLifetime<'a> {
