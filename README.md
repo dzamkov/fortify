@@ -348,4 +348,5 @@ fn main() {
 ```
 
 Success! With a minor reorganization of the setup code, we were able to promote stack-allocated
-variables into long-lived resources.
+variables into long-lived resources. Check out the full code for this example
+[here](https://github.com/dzamkov/fortify/blob/master/tests/game.rs).
