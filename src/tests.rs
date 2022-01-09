@@ -1,16 +1,20 @@
 use crate::*;
+use std::cell::Cell;
 
 #[test]
 fn test_complex() {
+    let counter = Cell::new(0);
     let fortified = fortify! {
         let a = Box::new([1, 1, 2, 3, 5, 8]);
         let b = 100;
         let c = fortify! {
             let d = 10000;
             let e = 500;
-            yield (&b, &d, [&b, &d, &e]);
+            let f = DropChecker::new(&counter);
+            yield (&b, &d, [&b, &d, &e], f);
         };
-        yield (&a, Box::new(&a[1..3]), c);
+        let d = DropChecker::new(&counter);
+        yield (&a, Box::new(&a[1..3]), c, d);
     };
     fortified.with_ref(|inner| {
         assert_eq!(&**inner.0, &[1, 1, 2, 3, 5, 8]);
@@ -23,6 +27,8 @@ fn test_complex() {
             assert_eq!(*inner.2[2], 500);
         });
     });
+    drop(fortified);
+    assert_eq!(counter.get(), 0);
 }
 
 #[test]
@@ -38,4 +44,45 @@ fn test_debug() {
         yield Test { a: &a, b: &b };
     };
     assert_eq!(format!("{:?}", fortified), "Test { a: 13, b: \"Foo\" }");
+}
+
+/// A helper for testing that a value is dropped.
+#[derive(WithLifetime)]
+struct DropChecker<'a>(&'a Cell<u32>);
+
+impl<'a> DropChecker<'a> {
+    fn new(counter: &'a Cell<u32>) -> Self {
+        counter.set(counter.get() + 1);
+        Self(counter)
+    }
+}
+
+impl<'a> Drop for DropChecker<'a> {
+    fn drop(&mut self) {
+        let old_count = self.0.get();
+        assert!(old_count > 0);
+        self.0.set(old_count - 1);
+    }
+}
+
+
+#[test]
+fn test_drop_new() {
+    let counter = Cell::new(0);
+    drop(Fortify::new(DropChecker::new(&counter)));
+    assert_eq!(counter.get(), 0);
+}
+
+#[test]
+fn test_drop_new_box_ref() {
+    let counter = Cell::new(0);
+    drop(Fortify::new_box_ref(Box::new(DropChecker::new(&counter))));
+    assert_eq!(counter.get(), 0);
+}
+
+#[test]
+fn test_drop_new_box_mut() {
+    let counter = Cell::new(0);
+    drop(Fortify::new_box_mut(Box::new(DropChecker::new(&counter))));
+    assert_eq!(counter.get(), 0);
 }

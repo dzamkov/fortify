@@ -224,7 +224,7 @@ impl<'a, T> Fortify<&'a T> {
         Self {
             value: ManuallyDrop::new(unsafe { &*data_raw }),
             data_raw: data_raw as *mut (),
-            data_drop_fn: drop_nop,
+            data_drop_fn: drop_box_from_raw::<T>,
         }
     }
 }
@@ -246,7 +246,7 @@ impl<'a, T> Fortify<&'a mut T> {
         Self {
             value: ManuallyDrop::new(unsafe { &mut *data_raw }),
             data_raw: data_raw as *mut (),
-            data_drop_fn: drop_nop,
+            data_drop_fn: drop_box_from_raw::<T>,
         }
     }
 }
