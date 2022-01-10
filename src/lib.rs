@@ -312,7 +312,10 @@ unsafe fn drop_box_from_raw<T>(raw: *mut ()) {
     // the box contains self-references (which is common with futures). Instead, we'll use the
     // destruction pattern from https://doc.rust-lang.org/std/boxed/struct.Box.html#method.into_raw
     std::ptr::drop_in_place(raw as *mut T);
-    std::alloc::dealloc(raw as *mut u8, std::alloc::Layout::new::<T>());
+    let layout = std::alloc::Layout::new::<T>();
+    if layout.size() > 0 {
+        std::alloc::dealloc(raw as *mut u8, layout);
+    }
 }
 
 /// A [`Waker`] that does nothing when waked.

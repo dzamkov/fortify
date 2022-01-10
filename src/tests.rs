@@ -32,6 +32,11 @@ fn test_complex() {
 }
 
 #[test]
+fn test_zst() {
+    let _: Fortify<&'static ()> = Fortify::new_dep((), |r| RefFortify::new(&*r));
+}
+
+#[test]
 fn test_debug() {
     #[derive(WithLifetime, Debug)]
     struct Test<'a> {
