@@ -65,7 +65,6 @@ impl<'a> Drop for DropChecker<'a> {
     }
 }
 
-
 #[test]
 fn test_drop_new() {
     let counter = Cell::new(0);

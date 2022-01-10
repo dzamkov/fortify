@@ -40,7 +40,7 @@ pub use fortify_derive::*;
 use std::future::Future;
 use std::intrinsics::transmute;
 use std::marker::PhantomData;
-use std::mem::ManuallyDrop;
+use std::mem::{ManuallyDrop, MaybeUninit};
 use std::pin::Pin;
 use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
@@ -76,48 +76,45 @@ impl<T> Fortify<T> {
     }
 
     /// Creates a [`Fortify`] by explicitly providing its owned data and constructing its value
-    /// from that using a closure. The closure must call [`FortifyBuilder::provide`] to provide the
-    /// value of the `Fortify`.
+    /// from that using a closure. Note that for technical reasons, the constructed value must be
+    /// wrapped in a [`RefFortify`] wrapper.
     ///
     /// # Example
     /// ```
-    /// use fortify::Fortify;
+    /// use fortify::{Fortify, RefFortify};
     /// let mut str = String::new();
     /// str.push_str("Hello");
-    /// let fortified: Fortify<&str> = Fortify::new_dep(str, |b, s| b.provide(s.as_str()));
+    /// let fortified: Fortify<&str> = Fortify::new_dep(str, |s| RefFortify::new(s.as_str()));
     /// assert_eq!(fortified.borrow(), &"Hello");
     /// ```
     pub fn new_dep<'a, O: 'a, C>(owned: O, cons: C) -> Self
     where
         T: for<'b> WithLifetime<'b>,
-        C: 'a + for<'b> FnOnce(FortifyBuilder<'a, T>, &'b mut O),
+        C: 'a + for<'b> FnOnce(&'b mut O) -> RefFortify<'b, T>,
     {
         Self::new_box_dep(Box::new(owned), cons)
     }
 
     /// Creates a [`Fortify`] by explicitly providing its owned data (as a [`Box`]) and
-    /// constructing its value from that using a closure. The closure must call
-    /// [`FortifyBuilder::provide`] to provide the value of the `Fortify`.
+    /// constructing its value from that using a closure. Note that for technical reasons, the
+    /// constructed value must be wrapped in a [`RefFortify`] wrapper.
     pub fn new_box_dep<'a, O: 'a, C>(mut owned: Box<O>, cons: C) -> Self
     where
         T: for<'b> WithLifetime<'b>,
-        C: 'a + for<'b> FnOnce(FortifyBuilder<'a, T>, &'b mut O),
+        C: 'a + for<'b> FnOnce(&'b mut O) -> RefFortify<'b, T>,
     {
-        let mut value = None;
-        cons(
-            FortifyBuilder {
-                ptr: &mut value,
-                marker: PhantomData,
-            },
-            &mut *owned,
-        );
-        match value {
-            Some(value) => Self {
-                value: ManuallyDrop::new(value),
-                data_raw: Box::into_raw(owned) as *mut (),
-                data_drop_fn: drop_box_from_raw::<O>,
-            },
-            None => panic!("FortifyBuilder::provide must be called to provide a value"),
+        let value = unsafe {
+            let mut value = MaybeUninit::uninit();
+            std::ptr::write(
+                value.as_mut_ptr() as *mut <T as WithLifetime<'_>>::Target,
+                cons(&mut *owned).into_inner(),
+            );
+            value.assume_init()
+        };
+        Self {
+            value: ManuallyDrop::new(value),
+            data_raw: Box::into_raw(owned) as *mut (),
+            data_drop_fn: drop_box_from_raw::<O>,
         }
     }
 
@@ -125,7 +122,7 @@ impl<T> Fortify<T> {
     /// as the `Future` "yields" a value, it will be suspended and become the supplementary data
     /// for the `Fortify`. This allows the inner value to reference locals defined by the `Future`.
     ///
-    /// The `Future` must await on [`FortifyBuilder::yield_`] and nothing else. Code following the
+    /// The `Future` must await on [`FortifyYielder::yield_`] and nothing else. Code following the
     /// await may or may not be executed.
     ///
     /// This is a hacky way of taking advantage of rust's code generation for async in order to
@@ -136,9 +133,9 @@ impl<T> Fortify<T> {
     /// ```
     /// use fortify::Fortify;
     /// let external = 1;
-    /// let mut fortified: Fortify<(&i32, &i32)> = Fortify::new_async(|b| async {
+    /// let mut fortified: Fortify<(&i32, &i32)> = Fortify::new_async(|y| async {
     ///     let internal = 2;
-    ///     b.yield_((&external, &internal)).await;
+    ///     y.yield_((&external, &internal)).await;
     /// });
     /// let (external_ref, internal_ref) = *fortified.borrow();
     /// assert_eq!(*external_ref, 1);
@@ -147,18 +144,18 @@ impl<T> Fortify<T> {
     pub fn new_async<'a, C, F>(cons: C) -> Self
     where
         T: WithLifetime<'a, Target = T>,
-        C: 'a + FnOnce(FortifyBuilder<'a, T>) -> F,
+        C: 'a + FnOnce(FortifyYielder<'a, T>) -> F,
         F: 'a + Future<Output = ()>,
     {
         let mut value = None;
-        let mut future = Box::pin(cons(FortifyBuilder {
+        let mut future = Box::pin(cons(FortifyYielder {
             ptr: &mut value,
             marker: PhantomData,
         }));
         let waker = nop_waker();
         let mut cx = Context::from_waker(&waker);
         match Future::poll(future.as_mut(), &mut cx) {
-            Poll::Ready(_) => panic!("Future must await on FortifyBuilder::yield_"),
+            Poll::Ready(_) => panic!("Future must await on FortifyYielder::yield_"),
             Poll::Pending => match value {
                 Some(value) => unsafe {
                     let data = Pin::into_inner_unchecked(future);
@@ -168,7 +165,7 @@ impl<T> Fortify<T> {
                         data_drop_fn: drop_box_from_raw::<F>,
                     };
                 },
-                None => panic!("Future may only await on FortifyBuilder::yield_"),
+                None => panic!("Future may only await on FortifyYielder::yield_"),
             },
         }
     }
@@ -325,23 +322,32 @@ fn nop_waker() -> Waker {
     unsafe { Waker::from_raw(RawWaker::new(0 as *const (), VTABLE)) }
 }
 
-/// A helper interface used by [`Fortify`] constructors.
-pub struct FortifyBuilder<'a, T> {
+/// Wraps a value of type `T` and allows it to reference arbitrary supplementary data in the `'a`
+/// lifetime. This is isomorphic to `<T as WithLifetime<'a>>::Target`, but necessary to work around
+/// some [issues](https://stackoverflow.com/questions/60459609/how-do-i-return-an-associated-type-from-a-higher-ranked-trait-bound-trait)
+/// with type checking.
+pub struct RefFortify<'a, T: for<'b> WithLifetime<'b>>(<T as WithLifetime<'a>>::Target);
+
+impl<'a, T: for<'b> WithLifetime<'b>> RefFortify<'a, T> {
+    /// Constructs a [`RefFortify`] from its wrapped value.
+    pub fn new(value: <T as WithLifetime<'a>>::Target) -> Self {
+        RefFortify(value)
+    }
+
+    /// Unpacks this [`RefFortify`] wrapper.
+    pub fn into_inner(self) -> <T as WithLifetime<'a>>::Target {
+        self.0
+    }
+}
+
+/// A helper interface used by the [`Fortify::new_async`] constructor.
+pub struct FortifyYielder<'a, T> {
     ptr: *mut Option<T>,
     marker: PhantomData<&'a ()>,
 }
 
-impl<'a, T> FortifyBuilder<'a, T> {
-    /// Provides the [`Fortify`] value to this [`FortifyBuilder`].
-    pub fn provide<'b, O>(self, value: O)
-    where
-        T: WithLifetime<'b, Target = O>,
-        O: WithLifetime<'a, Target = T>,
-    {
-        unsafe { *(self.ptr as *mut Option<O>) = Some(value) };
-    }
-
-    /// Provides the [`Fortify`] value to this [`FortifyBuilder`] and returns a [`Future`] that may
+impl<'a, T> FortifyYielder<'a, T> {
+    /// Provides the [`Fortify`] value to this [`FortifyYielder`] and returns a [`Future`] that may
     /// be awaited to suspend execution.
     pub fn yield_<'b, O>(self, value: O) -> impl Future<Output = ()>
     where
@@ -349,13 +355,13 @@ impl<'a, T> FortifyBuilder<'a, T> {
         O: WithLifetime<'a, Target = T>,
     {
         unsafe { *(self.ptr as *mut Option<O>) = Some(value) };
-        FortifyBuilderFuture
+        FortifyYielderFuture
     }
 }
 
-struct FortifyBuilderFuture;
+struct FortifyYielderFuture;
 
-impl Future for FortifyBuilderFuture {
+impl Future for FortifyYielderFuture {
     type Output = ();
 
     fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
