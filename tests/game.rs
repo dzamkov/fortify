@@ -68,7 +68,7 @@ impl<'a> Texture<'a> {
     /// Loads a texture by name.
     pub fn load(device: &'a Device, name: &'static str) -> Self {
         Self {
-            device: &device,
+            device,
             id: device.load_texture(name)
         }
     }

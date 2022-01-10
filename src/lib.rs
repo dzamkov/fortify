@@ -148,25 +148,24 @@ impl<T> Fortify<T> {
         F: 'a + Future<Output = ()>,
     {
         let mut value = None;
-        let mut future = Box::pin(cons(FortifyYielder {
+        let future = Box::into_raw(Box::new(cons(FortifyYielder {
             ptr: &mut value,
             marker: PhantomData,
-        }));
+        })));
         let waker = nop_waker();
         let mut cx = Context::from_waker(&waker);
-        match Future::poll(future.as_mut(), &mut cx) {
+        match Future::poll(unsafe { Pin::new_unchecked(&mut *future) }, &mut cx) {
             Poll::Ready(_) => panic!("Future must await on FortifyYielder::yield_"),
-            Poll::Pending => match value {
-                Some(value) => unsafe {
-                    let data = Pin::into_inner_unchecked(future);
-                    return Fortify {
+            Poll::Pending => {
+                match value {
+                    Some(value) => Fortify {
                         value: ManuallyDrop::new(value),
-                        data_raw: Box::into_raw(data) as *mut (),
+                        data_raw: future as *mut (),
                         data_drop_fn: drop_box_from_raw::<F>,
-                    };
-                },
-                None => panic!("Future may only await on FortifyYielder::yield_"),
-            },
+                    },
+                    None => panic!("Future may only await on FortifyYielder::yield_"),
+                }
+            }
         }
     }
 
@@ -309,7 +308,11 @@ unsafe fn drop_nop(_: *mut ()) {
 
 /// Constructs a box from its raw pointer and then drops it.
 unsafe fn drop_box_from_raw<T>(raw: *mut ()) {
-    drop(Box::from_raw(raw as *mut T))
+    // NOTE: It may seem easier to convert to a box and drop it here, but that may trigger UB if
+    // the box contains self-references (which is common with futures). Instead, we'll use the
+    // destruction pattern from https://doc.rust-lang.org/std/boxed/struct.Box.html#method.into_raw
+    std::ptr::drop_in_place(raw as *mut T);
+    std::alloc::dealloc(raw as *mut u8, std::alloc::Layout::new::<T>());
 }
 
 /// A [`Waker`] that does nothing when waked.
