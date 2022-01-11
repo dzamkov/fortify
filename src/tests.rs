@@ -90,3 +90,32 @@ fn test_drop_new_box_mut() {
     drop(Fortify::new_box_mut(Box::new(DropChecker::new(&counter))));
     assert_eq!(counter.get(), 0);
 }
+
+#[test]
+#[should_panic]
+#[allow(unused_must_use)]
+fn test_new_async_no_await() {
+    let _ = Fortify::new_async(|y| async {
+        let x = 42;
+        y.yield_(&x);
+    });
+}
+
+#[test]
+#[should_panic]
+#[allow(unused_must_use)]
+fn test_new_async_bad_await() {
+    struct OtherFuture;
+    impl Future for OtherFuture {
+        type Output = ();
+
+        fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
+            Poll::Pending
+        }
+    }
+    let _ = Fortify::new_async(|y| async {
+        let x = 42;
+        y.yield_(&x);
+        OtherFuture.await;
+    });
+}

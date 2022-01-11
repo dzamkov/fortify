@@ -147,23 +147,31 @@ impl<T> Fortify<T> {
         C: 'a + FnOnce(FortifyYielder<'a, T>) -> F,
         F: 'a + Future<Output = ()>,
     {
-        let mut value = None;
+        let mut target = FortifyYielderTarget {
+            value: MaybeUninit::uninit(),
+            has_awaited: false,
+        };
         let future = Box::into_raw(Box::new(cons(FortifyYielder {
-            ptr: &mut value,
+            ptr: &mut target,
             marker: PhantomData,
         })));
         let waker = nop_waker();
         let mut cx = Context::from_waker(&waker);
         match Future::poll(unsafe { Pin::new_unchecked(&mut *future) }, &mut cx) {
-            Poll::Ready(_) => panic!("Future must await on FortifyYielder::yield_"),
+            Poll::Ready(_) => {
+                unsafe { drop_box_from_raw::<F>(future as *mut ()) }; 
+                panic!("Future must await on FortifyYielder::yield_")
+            },
             Poll::Pending => {
-                match value {
-                    Some(value) => Fortify {
-                        value: ManuallyDrop::new(value),
+                if target.has_awaited {
+                    Fortify {
+                        value: ManuallyDrop::new(unsafe { target.value.assume_init() }),
                         data_raw: future as *mut (),
                         data_drop_fn: drop_box_from_raw::<F>,
-                    },
-                    None => panic!("Future may only await on FortifyYielder::yield_"),
+                    }
+                } else {
+                    unsafe { drop_box_from_raw::<F>(future as *mut ()) }; 
+                    panic!("Future may only await on FortifyYielder::yield_")
                 }
             }
         }
@@ -348,31 +356,47 @@ impl<'a, T: for<'b> WithLifetime<'b>> RefFortify<'a, T> {
 
 /// A helper interface used by the [`Fortify::new_async`] constructor.
 pub struct FortifyYielder<'a, T> {
-    ptr: *mut Option<T>,
+    ptr: *mut FortifyYielderTarget<T>,
     marker: PhantomData<&'a ()>,
 }
 
 impl<'a, T> FortifyYielder<'a, T> {
     /// Provides the [`Fortify`] value to this [`FortifyYielder`] and returns a [`Future`] that may
     /// be awaited to suspend execution.
-    pub fn yield_<'b, O>(self, value: O) -> impl Future<Output = ()>
+    pub fn yield_<'b, O>(self, value: O) -> impl Future<Output = ()> + 'b
     where
         T: WithLifetime<'b, Target = O>,
         O: WithLifetime<'a, Target = T>,
     {
-        unsafe { *(self.ptr as *mut Option<O>) = Some(value) };
-        FortifyYielderFuture
+        unsafe {
+            let target = &mut *(self.ptr as *mut FortifyYielderTarget<O>);
+            target.value.write(value);
+            FortifyYielderFuture::<'b> {
+                has_awaited_ptr: &mut target.has_awaited,
+                marker: PhantomData,
+            }
+        }
     }
 }
 
-struct FortifyYielderFuture;
+struct FortifyYielderFuture<'a> {
+    has_awaited_ptr: *mut bool,
+    marker: PhantomData<&'a ()>,
+}
 
-impl Future for FortifyYielderFuture {
+impl<'a> Future for FortifyYielderFuture<'a> {
     type Output = ();
 
-    fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
+    fn poll(mut self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
+        unsafe { *self.has_awaited_ptr = true };
         Poll::Pending
     }
+}
+
+/// The data to be updated by a [`FortifyYielder`].
+struct FortifyYielderTarget<T> {
+    value: MaybeUninit<T>,
+    has_awaited: bool,
 }
 
 /// Indicates that a type has a "primary" lifetime parameter and that parameter can be
