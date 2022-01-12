@@ -101,21 +101,48 @@ fn test_new_async_no_await() {
     });
 }
 
+struct NopFuture;
+impl Future for NopFuture {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
+        Poll::Pending
+    }
+}
+
 #[test]
 #[should_panic]
 #[allow(unused_must_use)]
 fn test_new_async_bad_await() {
-    struct OtherFuture;
-    impl Future for OtherFuture {
-        type Output = ();
-
-        fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
-            Poll::Pending
-        }
-    }
     let _ = Fortify::new_async(|y| async {
         let x = 42;
-        y.yield_(&x);
-        OtherFuture.await;
+        let future = y.yield_(&x);
+
+        // Try tricking `new_async` into thinking the future was awaited by polling on it
+        let waker = nop_waker();
+        let mut fake_cx = Context::from_waker(&waker);
+        Box::pin(future).as_mut().poll(&mut fake_cx);
+
+        // .. but await a different future instead
+        NopFuture.await;
     });
+}
+
+#[test]
+#[allow(unused_must_use)]
+fn test_new_async_proxy_await() {
+    let fortified = Fortify::new_async(|y| async {
+        let x = Box::new(42);
+        let future = y.yield_(&*x);
+        let waker = nop_waker();
+        let mut fake_cx = Context::from_waker(&waker);
+        let mut future = Box::pin(future);
+        future.as_mut().poll(&mut fake_cx);
+
+        // Even though we awaited on the wrong future, the correct future is still alive,
+        // thus the referent (x) must also be alive due to lifetime constraints. This should still
+        // create a valid fortified.
+        NopFuture.await;
+    });
+    assert_eq!(**fortified.borrow(), 42);
 }

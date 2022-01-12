@@ -147,12 +147,12 @@ impl<T> Fortify<T> {
         C: 'a + FnOnce(FortifyYielder<'a, T>) -> F,
         F: 'a + Future<Output = ()>,
     {
-        let mut target = FortifyYielderTarget {
+        let mut context = FortifyYielderContext {
             value: MaybeUninit::uninit(),
-            has_awaited: false,
+            yielder_future_ptr: std::ptr::null_mut()
         };
         let future = Box::into_raw(Box::new(cons(FortifyYielder {
-            ptr: &mut target,
+            context_ptr: &mut context,
             marker: PhantomData,
         })));
         let waker = nop_waker();
@@ -163,9 +163,14 @@ impl<T> Fortify<T> {
                 panic!("Future must await on FortifyYielder::yield_")
             },
             Poll::Pending => {
-                if target.has_awaited {
+                if !context.yielder_future_ptr.is_null() {
+                    unsafe {
+                        // Set `yielder_future_ptr` to null to prevent `context` from being
+                        // accessed after this call returns.
+                        (*context.yielder_future_ptr).0 = std::ptr::null_mut();
+                    }
                     Fortify {
-                        value: ManuallyDrop::new(unsafe { target.value.assume_init() }),
+                        value: ManuallyDrop::new(unsafe { context.value.assume_init() }),
                         data_raw: future as *mut (),
                         data_drop_fn: drop_box_from_raw::<F>,
                     }
@@ -356,7 +361,7 @@ impl<'a, T: for<'b> WithLifetime<'b>> RefFortify<'a, T> {
 
 /// A helper interface used by the [`Fortify::new_async`] constructor.
 pub struct FortifyYielder<'a, T> {
-    ptr: *mut FortifyYielderTarget<T>,
+    context_ptr: *mut FortifyYielderContext<T>,
     marker: PhantomData<&'a ()>,
 }
 
@@ -369,34 +374,46 @@ impl<'a, T> FortifyYielder<'a, T> {
         O: WithLifetime<'a, Target = T>,
     {
         unsafe {
-            let target = &mut *(self.ptr as *mut FortifyYielderTarget<O>);
+            let target = &mut *(self.context_ptr as *mut FortifyYielderContext<O>);
             target.value.write(value);
-            FortifyYielderFuture::<'b> {
-                has_awaited_ptr: &mut target.has_awaited,
-                marker: PhantomData,
-            }
+            FortifyYielderFuture(&mut target.yielder_future_ptr)
         }
     }
 }
 
-struct FortifyYielderFuture<'a> {
-    has_awaited_ptr: *mut bool,
-    marker: PhantomData<&'a ()>,
+struct FortifyYielderContext<T> {
+    value: MaybeUninit<T>,
+    yielder_future_ptr: *mut FortifyYielderFuture
 }
 
-impl<'a> Future for FortifyYielderFuture<'a> {
+struct FortifyYielderFuture(*mut *mut FortifyYielderFuture);
+
+impl Future for FortifyYielderFuture {
     type Output = ();
 
-    fn poll(mut self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
-        unsafe { *self.has_awaited_ptr = true };
+    fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
+        if !self.0.is_null() {
+            unsafe {
+                // Inform the context that the yield future has been created and pinned. This is a
+                // necessary precondition to using the yielded value.
+                let self_mut = Pin::into_inner_unchecked(self);
+                *self_mut.0 = &mut *self_mut;
+            }
+        }
         Poll::Pending
     }
 }
 
-/// The data to be updated by a [`FortifyYielder`].
-struct FortifyYielderTarget<T> {
-    value: MaybeUninit<T>,
-    has_awaited: bool,
+impl Drop for FortifyYielderFuture {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe {
+                // Inform the context that the yielder future has been dropped. This indicates
+                // that it is no longer safe to use the yielded value.
+                *self.0 = std::ptr::null_mut();
+            }
+        }
+    }
 }
 
 /// Indicates that a type has a "primary" lifetime parameter and that parameter can be
