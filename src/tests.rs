@@ -33,7 +33,7 @@ fn test_complex() {
 
 #[test]
 fn test_zst() {
-    let _: Fortify<&'static ()> = Fortify::new_dep((), |r| RefFortify::new(&*r));
+    let _: Fortify<&'static ()> = Fortify::new_dep((), |r| FortifySource::new(&*r));
 }
 
 #[test]

@@ -38,9 +38,8 @@
 extern crate self as fortify;
 pub use fortify_derive::*;
 use std::future::Future;
-use std::intrinsics::transmute;
 use std::marker::PhantomData;
-use std::mem::{ManuallyDrop, MaybeUninit};
+use std::mem::{forget, transmute, transmute_copy, ManuallyDrop, MaybeUninit};
 use std::pin::Pin;
 use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
@@ -77,43 +76,37 @@ impl<T> Fortify<T> {
 
     /// Creates a [`Fortify`] by explicitly providing its owned data and constructing its value
     /// from that using a closure. Note that for technical reasons, the constructed value must be
-    /// wrapped in a [`RefFortify`] wrapper.
+    /// wrapped in a [`FortifySource`] wrapper.
     ///
     /// # Example
     /// ```
-    /// use fortify::{Fortify, RefFortify};
+    /// use fortify::{Fortify, FortifySource};
     /// let mut str = String::new();
     /// str.push_str("Hello");
-    /// let fortified: Fortify<&str> = Fortify::new_dep(str, |s| RefFortify::new(s.as_str()));
+    /// let fortified: Fortify<&str> = Fortify::new_dep(str, |s| FortifySource::new(s.as_str()));
     /// assert_eq!(fortified.borrow(), &"Hello");
     /// ```
     pub fn new_dep<'a, O: 'a, C>(owned: O, cons: C) -> Self
     where
-        T: for<'b> WithLifetime<'b>,
-        C: 'a + for<'b> FnOnce(&'b mut O) -> RefFortify<'b, T>,
+        T: WithLifetime<'a, Target = T>,
+        C: 'a + for<'b> FnOnce(&'b mut O) -> FortifySource<'b, 'a, T>,
     {
         Self::new_box_dep(Box::new(owned), cons)
     }
 
     /// Creates a [`Fortify`] by explicitly providing its owned data (as a [`Box`]) and
     /// constructing its value from that using a closure. Note that for technical reasons, the
-    /// constructed value must be wrapped in a [`RefFortify`] wrapper.
-    pub fn new_box_dep<'a, O: 'a, C>(mut owned: Box<O>, cons: C) -> Self
+    /// constructed value must be wrapped in a [`FortifySource`] wrapper.
+    pub fn new_box_dep<'a, O: 'a, C>(owned: Box<O>, cons: C) -> Self
     where
-        T: for<'b> WithLifetime<'b>,
-        C: 'a + for<'b> FnOnce(&'b mut O) -> RefFortify<'b, T>,
+        T: WithLifetime<'a, Target = T>,
+        C: 'a + for<'b> FnOnce(&'b mut O) -> FortifySource<'b, 'a, T>,
     {
-        let value = unsafe {
-            let mut value = MaybeUninit::uninit();
-            std::ptr::write(
-                value.as_mut_ptr() as *mut <T as WithLifetime<'_>>::Target,
-                cons(&mut *owned).into_inner(),
-            );
-            value.assume_init()
-        };
+        let owned = Box::into_raw(owned);
+        let value = cons(unsafe { &mut *owned });
         Self {
-            value: ManuallyDrop::new(value),
-            data_raw: Box::into_raw(owned) as *mut (),
+            value: ManuallyDrop::new(value.into_inner()),
+            data_raw: owned as *mut (),
             data_drop_fn: drop_box_from_raw::<O>,
         }
     }
@@ -149,7 +142,7 @@ impl<T> Fortify<T> {
     {
         let mut context = FortifyYielderContext {
             value: MaybeUninit::uninit(),
-            yielder_future_ptr: std::ptr::null_mut()
+            yielder_future_ptr: std::ptr::null_mut(),
         };
         let future = Box::into_raw(Box::new(cons(FortifyYielder {
             context_ptr: &mut context,
@@ -159,9 +152,9 @@ impl<T> Fortify<T> {
         let mut cx = Context::from_waker(&waker);
         match Future::poll(unsafe { Pin::new_unchecked(&mut *future) }, &mut cx) {
             Poll::Ready(_) => {
-                unsafe { drop_box_from_raw::<F>(future as *mut ()) }; 
+                unsafe { drop_box_from_raw::<F>(future as *mut ()) };
                 panic!("Future must await on FortifyYielder::yield_")
-            },
+            }
             Poll::Pending => {
                 if !context.yielder_future_ptr.is_null() {
                     unsafe {
@@ -175,7 +168,7 @@ impl<T> Fortify<T> {
                         data_drop_fn: drop_box_from_raw::<F>,
                     }
                 } else {
-                    unsafe { drop_box_from_raw::<F>(future as *mut ()) }; 
+                    unsafe { drop_box_from_raw::<F>(future as *mut ()) };
                     panic!("Future may only await on FortifyYielder::yield_")
                 }
             }
@@ -345,17 +338,33 @@ fn nop_waker() -> Waker {
 /// lifetime. This is isomorphic to `<T as WithLifetime<'a>>::Target`, but necessary to work around
 /// some [issues](https://stackoverflow.com/questions/60459609/how-do-i-return-an-associated-type-from-a-higher-ranked-trait-bound-trait)
 /// with type checking.
-pub struct RefFortify<'a, T: for<'b> WithLifetime<'b>>(<T as WithLifetime<'a>>::Target);
+pub struct FortifySource<'a, 'b, T> {
+    value: T,
+    marker: PhantomData<fn(&'a (), &'b ()) -> (&'a (), &'b ())>,
+}
 
-impl<'a, T: for<'b> WithLifetime<'b>> RefFortify<'a, T> {
-    /// Constructs a [`RefFortify`] from its wrapped value.
-    pub fn new(value: <T as WithLifetime<'a>>::Target) -> Self {
-        RefFortify(value)
+impl<'a, 'b, T> FortifySource<'a, 'b, T> {
+    /// Constructs a [`FortifySource`] from its wrapped value.
+    pub fn new<O>(value: O) -> Self
+    where
+        T: WithLifetime<'a, Target = O>,
+        O: WithLifetime<'b, Target = T>,
+    {
+        let value = unsafe { transmute_copy(&value) };
+        FortifySource {
+            value,
+            marker: PhantomData,
+        }
     }
 
-    /// Unpacks this [`RefFortify`] wrapper.
-    pub fn into_inner(self) -> <T as WithLifetime<'a>>::Target {
-        self.0
+    /// Unpacks this [`FortifySource`] wrapper.
+    pub fn into_inner(self) -> <T as WithLifetime<'a>>::Target
+    where
+        T: WithLifetime<'a>,
+    {
+        let res = unsafe { transmute_copy(&self.value) };
+        forget(self.value);
+        res
     }
 }
 
@@ -383,7 +392,7 @@ impl<'a, T> FortifyYielder<'a, T> {
 
 struct FortifyYielderContext<T> {
     value: MaybeUninit<T>,
-    yielder_future_ptr: *mut FortifyYielderFuture
+    yielder_future_ptr: *mut FortifyYielderFuture,
 }
 
 struct FortifyYielderFuture(*mut *mut FortifyYielderFuture);
