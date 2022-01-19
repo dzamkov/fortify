@@ -39,7 +39,7 @@ extern crate self as fortify;
 pub use fortify_derive::*;
 use std::future::Future;
 use std::marker::PhantomData;
-use std::mem::{forget, transmute, transmute_copy, ManuallyDrop, MaybeUninit};
+use std::mem::{transmute, transmute_copy, ManuallyDrop, MaybeUninit};
 use std::pin::Pin;
 use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
@@ -222,12 +222,7 @@ impl<'a, T> Fortify<&'a T> {
     /// assert_eq!(**fortified.borrow(), 123);
     /// ```
     pub fn new_box_ref(value: Box<T>) -> Self {
-        let data_raw = Box::into_raw(value);
-        Self {
-            value: ManuallyDrop::new(unsafe { &*data_raw }),
-            data_raw: data_raw as *mut (),
-            data_drop_fn: drop_box_from_raw::<T>,
-        }
+        Fortify::new_box_dep(value, |inner| FortifySource::new(&*inner))
     }
 }
 
@@ -244,12 +239,7 @@ impl<'a, T> Fortify<&'a mut T> {
     /// assert_eq!(**fortified.borrow(), 246);
     /// ```
     pub fn new_box_mut(value: Box<T>) -> Self {
-        let data_raw = Box::into_raw(value);
-        Self {
-            value: ManuallyDrop::new(unsafe { &mut *data_raw }),
-            data_raw: data_raw as *mut (),
-            data_drop_fn: drop_box_from_raw::<T>,
-        }
+        Fortify::new_box_dep(value, |inner| FortifySource::new(inner))
     }
 }
 
@@ -350,7 +340,7 @@ impl<'a, 'b, T> FortifySource<'a, 'b, T> {
         T: WithLifetime<'a, Target = O>,
         O: WithLifetime<'b, Target = T>,
     {
-        let value = unsafe { transmute_copy(&value) };
+        let value = unsafe { transmute_copy(&*ManuallyDrop::new(value)) };
         FortifySource {
             value,
             marker: PhantomData,
@@ -362,9 +352,7 @@ impl<'a, 'b, T> FortifySource<'a, 'b, T> {
     where
         T: WithLifetime<'a>,
     {
-        let res = unsafe { transmute_copy(&self.value) };
-        forget(self.value);
-        res
+        unsafe { transmute_copy(&*ManuallyDrop::new(self.value)) }
     }
 }
 
