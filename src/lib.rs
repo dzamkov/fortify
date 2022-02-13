@@ -64,7 +64,7 @@ pub struct Fortify<T> {
     data_drop_fn: unsafe fn(*mut ()),
 }
 
-impl<T> Fortify<T> {
+impl<'a, T: WithLifetime<'a, Target = T>> Fortify<T> {
     /// Directly constructs a [`Fortify`] wrapper over the given value.
     pub fn new(value: T) -> Self {
         Self {
@@ -86,9 +86,8 @@ impl<T> Fortify<T> {
     /// let fortified: Fortify<&str> = Fortify::new_dep(str, |s| FortifySource::new(s.as_str()));
     /// assert_eq!(fortified.borrow(), &"Hello");
     /// ```
-    pub fn new_dep<'a, O: 'a, C>(owned: O, cons: C) -> Self
+    pub fn new_dep<O: 'a, C>(owned: O, cons: C) -> Self
     where
-        T: WithLifetime<'a, Target = T>,
         C: 'a + for<'b> FnOnce(&'b mut O) -> FortifySource<'b, 'a, T>,
     {
         Self::new_box_dep(Box::new(owned), cons)
@@ -97,9 +96,8 @@ impl<T> Fortify<T> {
     /// Creates a [`Fortify`] by explicitly providing its owned data (as a [`Box`]) and
     /// constructing its value from that using a closure. Note that for technical reasons, the
     /// constructed value must be wrapped in a [`FortifySource`] wrapper.
-    pub fn new_box_dep<'a, O: 'a, C>(owned: Box<O>, cons: C) -> Self
+    pub fn new_box_dep<O: 'a, C>(owned: Box<O>, cons: C) -> Self
     where
-        T: WithLifetime<'a, Target = T>,
         C: 'a + for<'b> FnOnce(&'b mut O) -> FortifySource<'b, 'a, T>,
     {
         let owned = Box::into_raw(owned);
@@ -134,9 +132,8 @@ impl<T> Fortify<T> {
     /// assert_eq!(*external_ref, 1);
     /// assert_eq!(*internal_ref, 2);
     /// ```
-    pub fn new_async<'a, C, F>(cons: C) -> Self
+    pub fn new_async<C, F>(cons: C) -> Self
     where
-        T: WithLifetime<'a, Target = T>,
         C: 'a + FnOnce(FortifyYielder<'a, T>) -> F,
         F: 'a + Future<Output = ()>,
     {
@@ -182,17 +179,19 @@ impl<T> Fortify<T> {
     ///
     /// For more general access to the wrapped value, see [`Fortify::with_ref`] and
     /// [`Fortify::with_mut`].
-    pub fn borrow<'a>(&'a self) -> &'a T
-    where
-        T: WithLifetime<'a, Target = T>,
-    {
+    pub fn borrow(&'a self) -> &'a T {
         &self.value
     }
+}
 
+// NOTE: this implementation doesn't verify the "identical runtime representation" condition for
+// `WithLifetime`, but that's okay because the condition is verified at the time the `Fortify` is
+// created. In order to keep things safe, all methods in this block must always use a pre-existing
+// `Fortify`.
+impl<T: for<'a> WithLifetime<'a>> Fortify<T> {
     /// Executes a closure using an immutable reference to the value stored inside this [`Fortify`].
     pub fn with_ref<'a, F, R>(&'a self, f: F) -> R
     where
-        T: for<'b> WithLifetime<'b>,
         F: for<'b> FnOnce(&'a <T as WithLifetime<'b>>::Target) -> R,
     {
         let value = &*self.value;
@@ -202,7 +201,6 @@ impl<T> Fortify<T> {
     /// Executes a closure using a mutable reference to the value stored inside this [`Fortify`].
     pub fn with_mut<'a, F, R>(&'a mut self, f: F) -> R
     where
-        T: for<'b> WithLifetime<'b>,
         F: for<'b> FnOnce(&'a mut <T as WithLifetime<'b>>::Target) -> R,
     {
         let value = &mut *self.value;
@@ -243,7 +241,7 @@ impl<'a, T> Fortify<&'a mut T> {
     }
 }
 
-impl<T> From<T> for Fortify<T> {
+impl<'a, T: WithLifetime<'a, Target = T>> From<T> for Fortify<T> {
     fn from(value: T) -> Self {
         Fortify::new(value)
     }
@@ -261,7 +259,7 @@ impl<'a, T> From<Box<T>> for Fortify<&'a mut T> {
     }
 }
 
-impl<T: Default> Default for Fortify<T> {
+impl<'a, T: Default + WithLifetime<'a, Target = T>> Default for Fortify<T> {
     fn default() -> Self {
         Fortify::new(T::default())
     }
@@ -417,6 +415,13 @@ impl Drop for FortifyYielderFuture {
 /// replaced with another lifetime (`'a`) to produce the type `WithLifetime<'a>::Target`. This
 /// trait can be automatically derived. When doing so, the first lifetime parameter in the
 /// parameters list will be treated as the "primary" lifetime parameter.
+///
+/// ## Safety Note
+/// For any value of `'a`, `Target` needs to be a type that has an identical runtime representation
+/// to `Self`. Rather than being asserted by the implementor, this condition is checked at the
+/// point of usage. This typically involves the constraint `T: WithLifetime<'a, Target = T>`. Due
+/// to parametericity of lifetime parameters, if `Target` has an identical runtime representation
+/// for some lifetime `'a`, it must have an identical runtime representation for all lifetimes.
 pub trait WithLifetime<'a> {
     /// The type resulting from replacing the "primary" lifetime of `Self` with `'a`.
     type Target: WithLifetime<'a, Target = Self::Target>;
