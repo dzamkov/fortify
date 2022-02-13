@@ -1,6 +1,6 @@
 [package]
 name = "fortify"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 authors = ["Dmitry Zamkov <dmitry94@gmail.com>"]
 description = "A simple and convenient way to bundle owned data with a borrowing type"
