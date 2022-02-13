@@ -1,5 +1,38 @@
 A simple and convenient way to bundle owned data with a borrowing type.
 
+## Example
+```rust
+use fortify::*;
+
+// Define a borrowing type.
+#[derive(WithLifetime)]
+struct Example<'a> {
+   a: &'a i32,
+   b: &'a mut i32,
+}
+
+// Construct a fortified value that makes an "external" reference to `a` and an "internal"
+// reference to `b`, which is owned by the Fortify.
+let a = 1;
+let mut example: Fortify<Example> = fortify! {
+    let mut b = 1;
+    b += 1;
+    yield Example {
+        a: &a,
+        b: &mut b
+    };
+};
+
+// Use `with_mut` for general mutable access to the wrapped value. Note that the reference
+// to `b` is still valid even though `b` is not in scope in this block.
+example.with_mut(|example| {
+    assert_eq!(*example.a, 1);
+    assert_eq!(*example.b, 2);
+    *example.b += 1;
+    assert_eq!(*example.b, 3);
+});
+```
+
 ## The Problem
 
 One of the main selling points of Rust is its borrow checker, which allows you to define types
@@ -27,13 +60,16 @@ There's a few existing solutions to mitigate this problem, but all of them have 
 lifetime from a lower level in the stack. However, the memory can't be freed until the allocator
 is dropped, so there is a practical limit to how long the allocator can be kept alive.
 * The [owning_ref](https://crates.io/crates/owning_ref) crate allows you to avoid specifying the
-lifetime for a reference by bundling it with the data it is referencing. Although it has some
-support for wrapping other dependent objects through
-[`OwningHandle`](http://kimundi.github.io/owning-ref-rs/owning_ref/struct.OwningHandle.html), it is
-inflexible and tricky to use.
+lifetime for a reference by bundling it with the data it is referencing. However, it has
+[numerous](https://github.com/Kimundi/owning-ref-rs/issues/49)
+[soundness](https://github.com/Kimundi/owning-ref-rs/issues/61)
+[issues](https://github.com/Kimundi/owning-ref-rs/issues/77) and is no longer being maintained.
 * There have been proposals for allowing self-referential structs. In lieu of language support,
-the [rental](https://crates.io/crates/rental) crate enables a limited form of this. However, it is
-no longer being maintained.
+the [rental](https://crates.io/crates/rental) and [ouroboros](https://crates.io/crates/ouroboros)
+crates enable a limited form of this. However, the implementation of self-referential structs is
+not as simple or intuitive as one would expect. There are limitations to what may be stored in
+the struct and access to struct fields must be restricted in order to adhere to Rust's aliasing
+rules.
 
 This crate introduces yet another solution to problem, with the goal of being flexible and
 convenient enough to enable fearless use of references and borrowing types.
@@ -113,5 +149,3 @@ let (external_ref, internal_ref) = *mixed.borrow();
 assert_eq!(*external_ref, 1);
 assert_eq!(*internal_ref, 2);
 ```
-
-[**Worked Example**](https://github.com/dzamkov/fortify/tree/master/tests/game.md)

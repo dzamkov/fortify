@@ -38,6 +38,7 @@ fn test_zst() {
 
 #[test]
 fn test_debug() {
+    #[allow(dead_code)]
     #[derive(WithLifetime, Debug)]
     struct Test<'a> {
         a: &'a i32,
