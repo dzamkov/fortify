@@ -10,7 +10,7 @@ pub struct User {
 
 pub struct Config(Fortify<ConfigInner<'static>>);
 
-#[derive(WithLifetime)]
+#[derive(Lower)]
 struct ConfigInner<'a> {
     pub users: &'a Vec<User>,
     pub map: HashMap<&'a str, &'a User>,

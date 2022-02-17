@@ -170,11 +170,11 @@ the application framework was kind enough to provide the following implementatio
 ```rust
 impl<T> Application for Fortify<T>
 where
-    for<'a> T: WithLifetime<'a>,
-    for<'a> <T as WithLifetime<'a>>::Target: Application,
+    for<'a> T: Lower<'a>,
+    for<'a> <T as Lower<'a>>::Target: Application,
 {
     fn draw(&self) {
-        self.with_ref(|app| app.draw())
+        self.borrow().draw()
     }
 
     fn update(&mut self, step: f32) {

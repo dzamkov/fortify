@@ -97,7 +97,7 @@ pub struct Entity<'a> {
 }
 
 /// Encapsulates the game state at a particular moment.
-#[derive(WithLifetime)]
+#[derive(Lower)]
 pub struct Game<'a> {
     device: &'a Device,
     background: &'a Texture<'a>,
@@ -137,11 +137,11 @@ impl<'a> Application for Game<'a> {
 // This implementation allows a "fortified" application to be used as an application itself.
 impl<T> Application for Fortify<T>
 where
-    for<'a> T: WithLifetime<'a>,
-    for<'a> <T as WithLifetime<'a>>::Target: Application,
+    for<'a> T: Lower<'a>,
+    for<'a> <T as Lower<'a>>::Target: Application,
 {
     fn draw(&self) {
-        self.with_ref(|app| app.draw())
+        self.borrow().draw()
     }
 
     fn update(&mut self, step: f32) {

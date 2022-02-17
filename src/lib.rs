@@ -7,8 +7,9 @@
 //! ```
 //! use fortify::*;
 //!
-//! // Define a borrowing type.
-//! #[derive(WithLifetime)]
+//! // Define a borrowing type. The `Lower` trait specifies that it is covariant in its first
+//! // lifetime parameter.
+//! #[derive(Lower)]
 //! struct Example<'a> {
 //!    a: &'a i32,
 //!    b: &'a mut i32,
@@ -36,10 +37,13 @@
 //! });
 //! ```
 extern crate self as fortify;
+mod lower;
+
 pub use fortify_derive::*;
-use std::future::Future;
+pub use lower::*;
 use std::marker::PhantomData;
-use std::mem::{transmute, transmute_copy, ManuallyDrop, MaybeUninit};
+use std::future::Future;
+use std::mem::{transmute_copy, ManuallyDrop, MaybeUninit};
 use std::pin::Pin;
 use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
@@ -64,7 +68,7 @@ pub struct Fortify<T> {
     data_drop_fn: unsafe fn(*mut ()),
 }
 
-impl<'a, T: WithLifetime<'a, Target = T>> Fortify<T> {
+impl<T> Fortify<T> {
     /// Directly constructs a [`Fortify`] wrapper over the given value.
     pub fn new(value: T) -> Self {
         Self {
@@ -73,37 +77,39 @@ impl<'a, T: WithLifetime<'a, Target = T>> Fortify<T> {
             data_drop_fn: drop_nop,
         }
     }
+}
 
+impl<'a, T: Lower<'a, Target = T> + 'a> Fortify<T> {
     /// Creates a [`Fortify`] by explicitly providing its owned data and constructing its value
     /// from that using a closure. Note that for technical reasons, the constructed value must be
-    /// wrapped in a [`FortifySource`] wrapper.
+    /// wrapped in a [`Lowered`] wrapper.
     ///
     /// # Example
     /// ```
-    /// use fortify::{Fortify, FortifySource};
+    /// use fortify::{Fortify, Lowered};
     /// let mut str = String::new();
     /// str.push_str("Hello");
-    /// let fortified: Fortify<&str> = Fortify::new_dep(str, |s| FortifySource::new(s.as_str()));
+    /// let fortified: Fortify<&str> = Fortify::new_dep(str, |s| Lowered::new(s.as_str()));
     /// assert_eq!(fortified.borrow(), &"Hello");
     /// ```
     pub fn new_dep<O: 'a, C>(owned: O, cons: C) -> Self
     where
-        C: 'a + for<'b> FnOnce(&'b mut O) -> FortifySource<'b, 'a, T>,
+        C: 'a + for<'b> FnOnce(&'b mut O) -> Lowered<'b, T>,
     {
         Self::new_box_dep(Box::new(owned), cons)
     }
 
     /// Creates a [`Fortify`] by explicitly providing its owned data (as a [`Box`]) and
     /// constructing its value from that using a closure. Note that for technical reasons, the
-    /// constructed value must be wrapped in a [`FortifySource`] wrapper.
+    /// constructed value must be wrapped in a [`Lowered`] wrapper.
     pub fn new_box_dep<O: 'a, C>(owned: Box<O>, cons: C) -> Self
     where
-        C: 'a + for<'b> FnOnce(&'b mut O) -> FortifySource<'b, 'a, T>,
+        C: 'a + for<'b> FnOnce(&'b mut O) -> Lowered<'b, T>,
     {
         let owned = Box::into_raw(owned);
         let value = cons(unsafe { &mut *owned });
         Self {
-            value: ManuallyDrop::new(value.into_inner()),
+            value: ManuallyDrop::new(Lowered::unwrap(value)),
             data_raw: owned as *mut (),
             data_drop_fn: drop_box_from_raw::<O>,
         }
@@ -122,11 +128,11 @@ impl<'a, T: WithLifetime<'a, Target = T>> Fortify<T> {
     ///
     /// # Example
     /// ```
-    /// use fortify::Fortify;
+    /// use fortify::{Fortify, Lowered};
     /// let external = 1;
     /// let mut fortified: Fortify<(&i32, &i32)> = Fortify::new_async(|y| async {
     ///     let internal = 2;
-    ///     y.yield_((&external, &internal)).await;
+    ///     y.yield_(Lowered::new((&external, &internal))).await;
     /// });
     /// let (external_ref, internal_ref) = *fortified.borrow();
     /// assert_eq!(*external_ref, 1);
@@ -134,7 +140,7 @@ impl<'a, T: WithLifetime<'a, Target = T>> Fortify<T> {
     /// ```
     pub fn new_async<C, F>(cons: C) -> Self
     where
-        C: 'a + FnOnce(FortifyYielder<'a, T>) -> F,
+        C: 'a + FnOnce(FortifyYielder<T>) -> F,
         F: 'a + Future<Output = ()>,
     {
         let mut context = FortifyYielderContext {
@@ -143,7 +149,6 @@ impl<'a, T: WithLifetime<'a, Target = T>> Fortify<T> {
         };
         let future = Box::into_raw(Box::new(cons(FortifyYielder {
             context_ptr: &mut context,
-            marker: PhantomData,
         })));
         let waker = nop_waker();
         let mut cx = Context::from_waker(&waker);
@@ -171,44 +176,42 @@ impl<'a, T: WithLifetime<'a, Target = T>> Fortify<T> {
             }
         }
     }
+}
 
-    /// Immutably borrows the value inside a [`Fortify`]. In practice, this can only be called when
-    /// `T` is covariant in its lifetime parameter, since the lifetime must be shortened to match
-    /// that of the `Fortify`. This is also the reason why there isn't a mutable version of this
-    /// function.
-    ///
-    /// For more general access to the wrapped value, see [`Fortify::with_ref`] and
-    /// [`Fortify::with_mut`].
-    pub fn borrow(&'a self) -> &'a T {
-        &self.value
+impl<'a, T: Lower<'a>> Fortify<T> {
+    /// Immutably borrows the value inside a [`Fortify`]. For more general access to the wrapped
+    /// value, see [`Fortify::with_ref`] and [`Fortify::with_mut`].
+    pub fn borrow(&'a self) -> &'a <T as Lower<'a>>::Target {
+        let value = &*self.value;
+        unsafe { transmute_copy(&value) }
     }
 }
 
-// NOTE: this implementation doesn't verify the "identical runtime representation" condition for
-// `WithLifetime`, but that's okay because the condition is verified at the time the `Fortify` is
-// created. In order to keep things safe, all methods in this block must always use a pre-existing
-// `Fortify`.
-impl<T: for<'a> WithLifetime<'a>> Fortify<T> {
+impl<T: for<'a> Lower<'a>> Fortify<T> {
     /// Executes a closure using an immutable reference to the value stored inside this [`Fortify`].
+    /// 
+    /// Calls to `with_ref` can typically be replaced with and simplified using `borrow`. This
+    /// method is retained for consistency with `with_mut` and possible support for non-covariant
+    /// types (which can't use `borrow`) in the future.
     pub fn with_ref<'a, F, R>(&'a self, f: F) -> R
     where
-        F: for<'b> FnOnce(&'a <T as WithLifetime<'b>>::Target) -> R,
+        F: for<'b> FnOnce(&'a <T as Lower<'b>>::Target) -> R,
     {
         let value = &*self.value;
-        f(unsafe { transmute(value) })
+        f(unsafe { transmute_copy(&value) })
     }
 
     /// Executes a closure using a mutable reference to the value stored inside this [`Fortify`].
     pub fn with_mut<'a, F, R>(&'a mut self, f: F) -> R
     where
-        F: for<'b> FnOnce(&'a mut <T as WithLifetime<'b>>::Target) -> R,
+        F: for<'b> FnOnce(&'a mut <T as Lower<'b>>::Target) -> R,
     {
         let value = &mut *self.value;
-        f(unsafe { transmute(value) })
+        f(unsafe { transmute_copy(&value) })
     }
 }
 
-impl<'a, T> Fortify<&'a T> {
+impl<'a, T: Lower<'a, Target = T>> Fortify<&'a T> {
     /// Creates a [`Fortify`] by taking ownership of a [`Box`] and wrapping a reference to
     /// the value inside it.
     ///
@@ -220,7 +223,7 @@ impl<'a, T> Fortify<&'a T> {
     /// assert_eq!(**fortified.borrow(), 123);
     /// ```
     pub fn new_box_ref(value: Box<T>) -> Self {
-        Fortify::new_box_dep(value, |inner| FortifySource::new(&*inner))
+        Fortify::new_box_dep(value, |inner| Lowered::new(&*inner))
     }
 }
 
@@ -237,17 +240,17 @@ impl<'a, T> Fortify<&'a mut T> {
     /// assert_eq!(**fortified.borrow(), 246);
     /// ```
     pub fn new_box_mut(value: Box<T>) -> Self {
-        Fortify::new_box_dep(value, |inner| FortifySource::new(inner))
+        Fortify::new_box_dep(value, |inner| Lowered::new(inner))
     }
 }
 
-impl<'a, T: WithLifetime<'a, Target = T>> From<T> for Fortify<T> {
+impl<'a, T: Lower<'a, Target = T> + 'a> From<T> for Fortify<T> {
     fn from(value: T) -> Self {
         Fortify::new(value)
     }
 }
 
-impl<'a, T> From<Box<T>> for Fortify<&'a T> {
+impl<'a, T: Lower<'a, Target = T>> From<Box<T>> for Fortify<&'a T> {
     fn from(value: Box<T>) -> Self {
         Fortify::new_box_ref(value)
     }
@@ -259,7 +262,7 @@ impl<'a, T> From<Box<T>> for Fortify<&'a mut T> {
     }
 }
 
-impl<'a, T: Default + WithLifetime<'a, Target = T>> Default for Fortify<T> {
+impl<'a, T: Default + Lower<'a, Target = T> + 'a> Default for Fortify<T> {
     fn default() -> Self {
         Fortify::new(T::default())
     }
@@ -267,22 +270,29 @@ impl<'a, T: Default + WithLifetime<'a, Target = T>> Default for Fortify<T> {
 
 impl<T> std::fmt::Debug for Fortify<T>
 where
-    for<'a> T: WithLifetime<'a>,
-    for<'a> <T as WithLifetime<'a>>::Target: std::fmt::Debug,
+    for<'a> T: Lower<'a>,
+    for<'a> <T as Lower<'a>>::Target: std::fmt::Debug,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.with_ref(|inner| inner.fmt(f))
+        self.borrow().fmt(f)
     }
 }
 
 impl<T> std::fmt::Display for Fortify<T>
 where
-    for<'a> T: WithLifetime<'a>,
-    for<'a> <T as WithLifetime<'a>>::Target: std::fmt::Display,
+    for<'a> T: Lower<'a>,
+    for<'a> <T as Lower<'a>>::Target: std::fmt::Display,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.with_ref(|inner| inner.fmt(f))
+        self.borrow().fmt(f)
     }
+}
+
+unsafe impl<'a, T: Lower<'a>> Lower<'a> for Fortify<T>
+where
+    <T as Lower<'a>>::Target: Sized,
+{
+    type Target = Fortify<<T as Lower<'a>>::Target>;
 }
 
 impl<T> Drop for Fortify<T> {
@@ -322,55 +332,18 @@ fn nop_waker() -> Waker {
     unsafe { Waker::from_raw(RawWaker::new(0 as *const (), VTABLE)) }
 }
 
-/// Wraps a value of type `T` and allows it to reference arbitrary supplementary data in the `'a`
-/// lifetime. This is isomorphic to `<T as WithLifetime<'a>>::Target`, but necessary to work around
-/// some [issues](https://stackoverflow.com/questions/60459609/how-do-i-return-an-associated-type-from-a-higher-ranked-trait-bound-trait)
-/// with type checking.
-pub struct FortifySource<'a, 'b, T> {
-    value: T,
-    marker: PhantomData<fn(&'a (), &'b ()) -> (&'a (), &'b ())>,
-}
-
-impl<'a, 'b, T> FortifySource<'a, 'b, T> {
-    /// Constructs a [`FortifySource`] from its wrapped value.
-    pub fn new<O>(value: O) -> Self
-    where
-        T: WithLifetime<'a, Target = O>,
-        O: WithLifetime<'b, Target = T>,
-    {
-        let value = unsafe { transmute_copy(&*ManuallyDrop::new(value)) };
-        FortifySource {
-            value,
-            marker: PhantomData,
-        }
-    }
-
-    /// Unpacks this [`FortifySource`] wrapper.
-    pub fn into_inner(self) -> <T as WithLifetime<'a>>::Target
-    where
-        T: WithLifetime<'a>,
-    {
-        unsafe { transmute_copy(&*ManuallyDrop::new(self.value)) }
-    }
-}
-
 /// A helper interface used by the [`Fortify::new_async`] constructor.
-pub struct FortifyYielder<'a, T> {
+pub struct FortifyYielder<T> {
     context_ptr: *mut FortifyYielderContext<T>,
-    marker: PhantomData<&'a ()>,
 }
 
-impl<'a, T> FortifyYielder<'a, T> {
+impl<T> FortifyYielder<T> {
     /// Provides the [`Fortify`] value to this [`FortifyYielder`] and returns a [`Future`] that may
     /// be awaited to suspend execution.
-    pub fn yield_<'b, O>(self, value: O) -> impl Future<Output = ()> + 'b
-    where
-        T: WithLifetime<'b, Target = O>,
-        O: WithLifetime<'a, Target = T>,
-    {
+    pub fn yield_<'a>(self, value: Lowered<'a, T>) -> impl Future<Output = ()> + 'a {
         unsafe {
-            let target = &mut *(self.context_ptr as *mut FortifyYielderContext<O>);
-            target.value.write(value);
+            let target = &mut *(self.context_ptr as *mut FortifyYielderContext<T>);
+            target.value.write(value.value);
             FortifyYielderFuture(&mut target.yielder_future_ptr)
         }
     }
@@ -411,68 +384,67 @@ impl Drop for FortifyYielderFuture {
     }
 }
 
-/// Indicates that a type has a "primary" lifetime parameter and that parameter can be
-/// replaced with another lifetime (`'a`) to produce the type `WithLifetime<'a>::Target`. This
-/// trait can be automatically derived. When doing so, the first lifetime parameter in the
-/// parameters list will be treated as the "primary" lifetime parameter.
-///
-/// ## Safety Note
-/// For any value of `'a`, `Target` needs to be a type that has an identical runtime representation
-/// to `Self`. Rather than being asserted by the implementor, this condition is checked at the
-/// point of usage. This typically involves the constraint `T: WithLifetime<'a, Target = T>`. Due
-/// to parametericity of lifetime parameters, if `Target` has an identical runtime representation
-/// for some lifetime `'a`, it must have an identical runtime representation for all lifetimes.
-pub trait WithLifetime<'a> {
-    /// The type resulting from replacing the "primary" lifetime of `Self` with `'a`.
-    type Target: WithLifetime<'a, Target = Self::Target>;
+/// A value of `T` with its lifetime shortened to `'a`. This is isomorphic to
+/// `<T as Lower<'a>>::Target`, but provides additional information to the compiler to assist
+/// type inferencing.
+pub struct Lowered<'a, T: 'a> {
+    value: T,
+    marker: PhantomData<&'a ()>,
 }
 
-impl<'a, 'b, T: 'b + ?Sized> WithLifetime<'b> for &'a T {
-    type Target = &'b T;
+impl<'a, T: 'a> Lowered<'a, T> {
+    /// Constructs a [`Lowered`] from its wrapped value.
+    /// 
+    /// The type signature of this function may look a bit odd, but it was carefully crafted
+    /// to assist type inferencing and minimize spurious compiler errors. You can think of
+    /// this function as taking a `<T as Lower<'a>>::Target`.
+    pub fn new<'b, O>(value: O) -> Self
+    where
+        'b: 'a,
+        O: Lower<'b, Target = T> + 'a,
+    {
+        let value = unsafe { transmute_copy(&*ManuallyDrop::new(value)) };
+        Lowered {
+            value,
+            marker: PhantomData,
+        }
+    }
+
+    /// Unpacks this [`Lowered`] wrapper.
+    pub fn unwrap(lowered: Self) -> <T as Lower<'a>>::Target
+    where
+        T: Lower<'a>,
+        <T as Lower<'a>>::Target: Sized,
+    {
+        unsafe { transmute_copy(&*ManuallyDrop::new(lowered.value)) }
+    }
 }
 
-impl<'a, 'b, T: 'b + ?Sized> WithLifetime<'b> for &'a mut T {
-    type Target = &'b mut T;
+impl<'a, T: Lower<'a>> std::ops::Deref for Lowered<'a, T> {
+    type Target = <T as Lower<'a>>::Target;
+    fn deref(&self) -> &Self::Target {
+        // Although we could use `lower_ref` to safely implement this, that would not be
+        // technically correct. `value` is logically a `<T as Lower<'a>>::Target`, not a `T`, so
+        // it doesn't make sense to lower it.
+        unsafe { transmute_copy(&&self.value) }
+    }
 }
 
-impl<'a, T: WithLifetime<'a> + ?Sized> WithLifetime<'a> for Box<T> {
-    type Target = Box<<T as WithLifetime<'a>>::Target>;
+impl<'a, T: Lower<'a>> std::ops::DerefMut for Lowered<'a, T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        unsafe { transmute_copy(&&mut self.value) }
+    }
 }
 
-impl<'a, T: WithLifetime<'a>, const N: usize> WithLifetime<'a> for [T; N] {
-    type Target = [<T as WithLifetime<'a>>::Target; N];
-}
-
-impl<'a, T: WithLifetime<'a>> WithLifetime<'a> for Fortify<T> {
-    type Target = Fortify<<T as WithLifetime<'a>>::Target>;
-}
-
-impl<'a, A: WithLifetime<'a>, B: WithLifetime<'a>> WithLifetime<'a> for (A, B) {
-    type Target = (
-        <A as WithLifetime<'a>>::Target,
-        <B as WithLifetime<'a>>::Target,
-    );
-}
-
-impl<'a, A: WithLifetime<'a>, B: WithLifetime<'a>, C: WithLifetime<'a>> WithLifetime<'a>
-    for (A, B, C)
-{
-    type Target = (
-        <A as WithLifetime<'a>>::Target,
-        <B as WithLifetime<'a>>::Target,
-        <C as WithLifetime<'a>>::Target,
-    );
-}
-
-impl<'a, A: WithLifetime<'a>, B: WithLifetime<'a>, C: WithLifetime<'a>, D: WithLifetime<'a>>
-    WithLifetime<'a> for (A, B, C, D)
-{
-    type Target = (
-        <A as WithLifetime<'a>>::Target,
-        <B as WithLifetime<'a>>::Target,
-        <C as WithLifetime<'a>>::Target,
-        <D as WithLifetime<'a>>::Target,
-    );
+unsafe impl<'a, 'b, T: 'a + 'b> Lower<'b> for Lowered<'a, T> {
+    type Target = Lowered<'b, T>;
+    fn lower_ref<'c>(&'c self) -> &'c Self::Target
+    where
+        'a: 'b,
+        'b: 'c,
+    {
+        self
+    } 
 }
 
 /// A helper macro for creating a `Fortify` using generator-like syntax. The macro takes a block of
@@ -496,7 +468,7 @@ impl<'a, A: WithLifetime<'a>, B: WithLifetime<'a>, C: WithLifetime<'a>, D: WithL
 #[macro_export]
 macro_rules! fortify {
     (@INNER $y:ident , yield $res:expr ;) => {
-        $y.yield_($res).await
+        $y.yield_(Lowered::new($res)).await
     };
     (@INNER $y:ident , $st:stmt ; $($t:tt)*) => {
         { $st fortify!(@INNER $y , $($t)*) }

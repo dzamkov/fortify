@@ -4,8 +4,9 @@ A simple and convenient way to bundle owned data with a borrowing type.
 ```rust
 use fortify::*;
 
-// Define a borrowing type.
-#[derive(WithLifetime)]
+// Define a borrowing type. The `Lower` trait specifies that it is covariant in its first
+// lifetime parameter.
+#[derive(Lower)]
 struct Example<'a> {
    a: &'a i32,
    b: &'a mut i32,
@@ -96,10 +97,9 @@ the enclosed type.
 **So if I use a type with multiple lifetime parameters, how does the wrapper know which lifetime
 it "works" on?**
 
-All wrapped types must implement the `WithLifetime<'a>` trait, which asserts that a type has a
-lifetime parameter *and* allows that parameter to be swapped for something else. This trait can be
-automatically derived, in which case it will operate on the first lifetime parameter in the
-parameter list.
+All wrapped types must implement the `Lower<'a>` trait, which specifies how to substitute the
+covariant lifetime parameters in the type. This trait can be automatically derived, in which
+case it will only operate on the first lifetime parameter in the parameter list.
 
 **How do I create a `Fortify<T>`?**
 
@@ -121,15 +121,14 @@ Note that it may make references to the local variables.
 
 **How do I use it?**
 
-In most cases, you will need to use `with_ref` or `with_mut`. These execute a caller-provided
-closure with the properly-typed inner value. There is one case where you don't need to use a 
-closure: if the wrapped value is covariant in its lifetime parameter, you can use `borrow` to get
-an immutable reference to it (with appropriately-shortened lifetime).
+You can use `borrow` to get an immutable reference to the wrapped value with appropriately
+shortened lifetime. Mutable access is a bit more complicated, and requires the
+use of `with_mut`.
 
 ```rust
-example.with_ref(|s| assert_eq!(s, &"FooBar"));
-// or
 assert_eq!(example.borrow(), &"FooBar");
+// or
+example.with_mut(|s| assert_eq!(s, &"FooBar"));
 ```
 
 **Can I use `Fortify<T>` with a non-`'static` lifetime?**

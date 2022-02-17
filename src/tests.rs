@@ -11,10 +11,10 @@ fn test_complex() {
             let d = 10000;
             let e = 500;
             let f = DropChecker::new(&counter);
-            yield (&b, &d, [&b, &d, &e], f);
+            yield (&b, &d, [&b, &d, &e], &f);
         };
         let d = DropChecker::new(&counter);
-        yield (&a, Box::new(&a[1..3]), c, d);
+        yield (&a, Box::new(&a[1..3]), &c, d);
     };
     fortified.with_ref(|inner| {
         assert_eq!(&**inner.0, &[1, 1, 2, 3, 5, 8]);
@@ -33,13 +33,28 @@ fn test_complex() {
 
 #[test]
 fn test_zst() {
-    let _: Fortify<&'static ()> = Fortify::new_dep((), |r| FortifySource::new(&*r));
+    let _: Fortify<&'static ()> = Fortify::new_dep((), |r| Lowered::new(&*r));
+}
+
+#[test]
+fn test_no_lifetime() {
+    #[allow(dead_code)]
+    #[derive(Lower)]
+    struct Test {
+        a: char,
+        b: bool,
+    }
+    let res = fortify! {
+        yield Test { a: 'x', b: true };
+    };
+    assert_eq!(res.borrow().a, 'x');
+    assert_eq!(res.borrow().b, true);
 }
 
 #[test]
 fn test_debug() {
     #[allow(dead_code)]
-    #[derive(WithLifetime, Debug)]
+    #[derive(Lower, Debug)]
     struct Test<'a> {
         a: &'a i32,
         b: &'a str,
@@ -53,7 +68,7 @@ fn test_debug() {
 }
 
 /// A helper for testing that a value is dropped.
-#[derive(WithLifetime)]
+#[derive(Lower)]
 struct DropChecker<'a>(&'a Cell<u32>);
 
 impl<'a> DropChecker<'a> {
@@ -98,7 +113,7 @@ fn test_drop_new_box_mut() {
 fn test_new_async_no_await() {
     let _ = Fortify::new_async(|y| async {
         let x = 42;
-        y.yield_(&x);
+        y.yield_(Lowered::new(&x));
     });
 }
 
@@ -117,7 +132,7 @@ impl Future for NopFuture {
 fn test_new_async_bad_await() {
     let _ = Fortify::new_async(|y| async {
         let x = 42;
-        let future = y.yield_(&x);
+        let future = y.yield_(Lowered::new(&x));
 
         // Try tricking `new_async` into thinking the future was awaited by polling on it
         let waker = nop_waker();
@@ -134,7 +149,7 @@ fn test_new_async_bad_await() {
 fn test_new_async_proxy_await() {
     let fortified = Fortify::new_async(|y| async {
         let x = Box::new(42);
-        let future = y.yield_(&*x);
+        let future = y.yield_(Lowered::new(&*x));
         let waker = nop_waker();
         let mut fake_cx = Context::from_waker(&waker);
         let mut future = Box::pin(future);
