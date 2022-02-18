@@ -3,17 +3,17 @@ use std::cell::Cell;
 
 #[test]
 fn test_complex() {
-    let counter = Cell::new(0);
+    let counter = &Cell::new(0);
     let fortified = fortify! {
         let a = Box::new([1, 1, 2, 3, 5, 8]);
         let b = 100;
         let c = fortify! {
             let d = 10000;
             let e = 500;
-            let f = DropChecker::new(&counter);
+            let f = DropChecker::new(counter);
             yield (&b, &d, [&b, &d, &e], &f);
         };
-        let d = DropChecker::new(&counter);
+        let d = DropChecker::new(counter);
         yield (&a, Box::new(&a[1..3]), &c, d);
     };
     fortified.with_ref(|inner| {
@@ -44,11 +44,27 @@ fn test_no_lifetime() {
         a: char,
         b: bool,
     }
-    let res = fortify! {
+    let fortified = fortify! {
         yield Test { a: 'x', b: true };
     };
-    assert_eq!(res.borrow().a, 'x');
-    assert_eq!(res.borrow().b, true);
+    assert_eq!(fortified.borrow().a, 'x');
+    assert_eq!(fortified.borrow().b, true);
+}
+
+#[test]
+fn test_move() {
+    // See https://github.com/dzamkov/fortify/issues/1
+    #[derive(Lower)]
+    pub struct I32<'a> {
+        foo: &'a i32,
+    }
+    fn create(foo: i32) -> Fortify<I32<'static>> {
+        fortify! {
+            let foo = foo;
+            yield I32 { foo: &foo };
+        }
+    }
+    assert_eq!(*create(15).borrow().foo, 15);
 }
 
 #[test]

@@ -474,7 +474,7 @@ macro_rules! fortify {
         { $st fortify!(@INNER $y , $($t)*) }
     };
     ($($t:tt)*) => {
-        $crate::Fortify::new_async(|y| async {
+        $crate::Fortify::new_async(move |y| async move {
             fortify!(@INNER y , $($t)*)
         })
     };
