@@ -1,14 +1,15 @@
-use std::mem::transmute_copy;
+use std::marker::PhantomData;
+use std::mem::{transmute_copy, ManuallyDrop};
 
 /// Indicates that a type [covariantly](https://doc.rust-lang.org/nomicon/subtyping.html)
 /// references a set of lifetime parameters, and when these parameters are all replaced with `'a`,
 /// the resulting type is `Target`. Consequentially, if the type outlives `'a`, it can be directly
 /// coerced to `Target` by applying covariance.
-/// 
+///
 /// This trait can be trivially implemented for any type by setting `Target` to be `Self`. However,
 /// in order to maximize its usefulness, it should operate on as many lifetime parameters as
 /// possible.
-/// 
+///
 /// This trait can be automatically derived. When deriving on a type with no lifetime parameters,
 /// the trivial implementation will be used (i.e. `Target = Self`). Otherwise, it will operate
 /// on the first lifetime parameter in the generic parameters list. Deriving will fail if the
@@ -157,3 +158,66 @@ impl_trivial_lower!(std::ffi::CStr);
 impl_trivial_lower!(std::ffi::CString);
 impl_trivial_lower!(std::ffi::OsStr);
 impl_trivial_lower!(std::ffi::OsString);
+
+/// A value of `T` with its lifetime shortened to `'a`. This is isomorphic to
+/// `<T as Lower<'a>>::Target`, but provides additional information to the compiler to assist
+/// type inferencing.
+pub struct Lowered<'a, T: 'a> {
+    pub(crate) value: T,
+    marker: PhantomData<&'a ()>,
+}
+
+impl<'a, T: 'a> Lowered<'a, T> {
+    /// Constructs a [`Lowered`] from its wrapped value.
+    ///
+    /// The type signature of this function may look a bit odd, but it was carefully crafted
+    /// to assist type inferencing and minimize spurious compiler errors. You can think of
+    /// this function as taking a `<T as Lower<'a>>::Target`.
+    pub fn new<'b, O>(value: O) -> Self
+    where
+        'b: 'a,
+        O: Lower<'b, Target = T> + 'a,
+    {
+        let value = unsafe { transmute_copy(&*ManuallyDrop::new(value)) };
+        Lowered {
+            value,
+            marker: PhantomData,
+        }
+    }
+
+    /// Unpacks this [`Lowered`] wrapper.
+    pub fn unwrap(lowered: Self) -> <T as Lower<'a>>::Target
+    where
+        T: Lower<'a>,
+        <T as Lower<'a>>::Target: Sized,
+    {
+        unsafe { transmute_copy(&*ManuallyDrop::new(lowered.value)) }
+    }
+}
+
+impl<'a, T: Lower<'a>> std::ops::Deref for Lowered<'a, T> {
+    type Target = <T as Lower<'a>>::Target;
+    fn deref(&self) -> &Self::Target {
+        // Although we could use `lower_ref` to safely implement this, that would not be
+        // technically correct. `value` is logically a `<T as Lower<'a>>::Target`, not a `T`, so
+        // it doesn't make sense to lower it.
+        unsafe { transmute_copy(&&self.value) }
+    }
+}
+
+impl<'a, T: Lower<'a>> std::ops::DerefMut for Lowered<'a, T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        unsafe { transmute_copy(&&mut self.value) }
+    }
+}
+
+unsafe impl<'a, 'b, T: 'a + 'b> Lower<'b> for Lowered<'a, T> {
+    type Target = Lowered<'b, T>;
+    fn lower_ref<'c>(&'c self) -> &'c Self::Target
+    where
+        'a: 'b,
+        'b: 'c,
+    {
+        self
+    }
+}
