@@ -40,8 +40,11 @@ fn test_zst() {
 fn test_no_lifetime() {
     #[allow(dead_code)]
     #[derive(Lower)]
-    struct Test {
-        a: char,
+    struct Test<T>
+    where
+        T: std::fmt::Display,
+    {
+        a: T,
         b: bool,
     }
     let fortified = fortify! {
