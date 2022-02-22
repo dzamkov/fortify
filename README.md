@@ -136,15 +136,4 @@ example.with_mut(|s| assert_eq!(s, &"FooBar"));
 Of course! The `Fortify` wrapper merely introduces an additional option for references (pointing to
 owned data inside the wrapper). It is always possible to forgo this option and construct a
 `Fortify<T>` directly from a `T`. You can even have a mixed value which makes some references to
-external data and some references to owned data.
-
-```rust
-let external = 1;
-let mut mixed: Fortify<(&i32, &i32)> = fortify! {
-    let internal = 2;
-    yield (&external, &internal);
-};
-let (external_ref, internal_ref) = *mixed.borrow();
-assert_eq!(*external_ref, 1);
-assert_eq!(*internal_ref, 2);
-```
+external data and some references to owned data, as in the first example.
