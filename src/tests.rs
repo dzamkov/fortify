@@ -162,22 +162,3 @@ fn test_new_async_bad_await() {
         NopFuture.await;
     });
 }
-
-#[test]
-#[allow(unused_must_use)]
-fn test_new_async_proxy_await() {
-    let fortified = Fortify::new_async(|y| async {
-        let x = Box::new(42);
-        let future = y.yield_(Lowered::new(&*x));
-        let waker = nop_waker();
-        let mut fake_cx = Context::from_waker(&waker);
-        let mut future = Box::pin(future);
-        future.as_mut().poll(&mut fake_cx);
-
-        // Even though we awaited on the wrong future, the correct future is still alive,
-        // thus the referent (x) must also be alive due to lifetime constraints. This should still
-        // create a valid fortified.
-        NopFuture.await;
-    });
-    assert_eq!(**fortified.borrow(), 42);
-}

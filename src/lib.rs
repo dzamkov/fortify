@@ -142,29 +142,25 @@ impl<'a, T: Lower<'a, Target = T> + 'a> Fortify<T> {
         C: 'a + FnOnce(FortifyYielder<T>) -> F,
         F: 'a + Future<Output = ()>,
     {
-        let mut context = FortifyYielderContext {
-            value: MaybeUninit::uninit(),
-            yielder_future_ptr: std::ptr::null_mut(),
-        };
-        let future = Box::into_raw(Box::new(cons(FortifyYielder {
-            context_ptr: &mut context,
-        })));
         let waker = nop_waker();
         let mut cx = Context::from_waker(&waker);
+        let mut data = FortifyYielderData {
+            value: MaybeUninit::uninit(),
+            tracker: FortifyYielderTracker {
+                cx_ptr: &cx as *const Context as *const (),
+                has_awaited: false,
+            }
+        };
+        let future = Box::into_raw(Box::new(cons(FortifyYielder(&mut data))));
         match Future::poll(unsafe { Pin::new_unchecked(&mut *future) }, &mut cx) {
             Poll::Ready(_) => {
                 unsafe { drop_box_from_raw::<F>(future as *mut ()) };
                 panic!("Future must await on FortifyYielder::yield_")
             }
             Poll::Pending => {
-                if !context.yielder_future_ptr.is_null() {
-                    unsafe {
-                        // Set `yielder_future_ptr` to null to prevent `context` from being
-                        // accessed after this call returns.
-                        (*context.yielder_future_ptr).0 = std::ptr::null_mut();
-                    }
+                if data.tracker.has_awaited {
                     Fortify {
-                        value: ManuallyDrop::new(unsafe { context.value.assume_init() }),
+                        value: ManuallyDrop::new(unsafe { data.value.assume_init() }),
                         data_raw: future as *mut (),
                         data_drop_fn: drop_box_from_raw::<F>,
                     }
@@ -188,7 +184,7 @@ impl<'a, T: Lower<'a>> Fortify<T> {
 
 impl<T: for<'a> Lower<'a>> Fortify<T> {
     /// Executes a closure using an immutable reference to the value stored inside this [`Fortify`].
-    /// 
+    ///
     /// Calls to `with_ref` can typically be replaced with and simplified using `borrow`. This
     /// method is retained for consistency with `with_mut` and possible support for non-covariant
     /// types (which can't use `borrow`) in the future.
@@ -332,54 +328,47 @@ fn nop_waker() -> Waker {
 }
 
 /// A helper interface used by the [`Fortify::new_async`] constructor.
-pub struct FortifyYielder<T> {
-    context_ptr: *mut FortifyYielderContext<T>,
-}
+pub struct FortifyYielder<T>(*mut FortifyYielderData<T>);
 
 impl<T> FortifyYielder<T> {
     /// Provides the [`Fortify`] value to this [`FortifyYielder`] and returns a [`Future`] that may
     /// be awaited to suspend execution.
     pub fn yield_<'a>(self, value: Lowered<'a, T>) -> impl Future<Output = ()> + 'a {
         unsafe {
-            let target = &mut *(self.context_ptr as *mut FortifyYielderContext<T>);
+            let target = &mut *self.0;
             target.value.write(value.value);
-            FortifyYielderFuture(&mut target.yielder_future_ptr)
+            FortifyYielderFuture(&mut target.tracker)
         }
     }
 }
 
-struct FortifyYielderContext<T> {
+struct FortifyYielderData<T> {
     value: MaybeUninit<T>,
-    yielder_future_ptr: *mut FortifyYielderFuture,
+    tracker: FortifyYielderTracker,
 }
 
-struct FortifyYielderFuture(*mut *mut FortifyYielderFuture);
+struct FortifyYielderTracker {
+    cx_ptr: *const (),
+    has_awaited: bool,
+}
+
+struct FortifyYielderFuture(*mut FortifyYielderTracker);
 
 impl Future for FortifyYielderFuture {
     type Output = ();
 
-    fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
-        if !self.0.is_null() {
-            unsafe {
-                // Inform the context that the yield future has been created and pinned. This is a
-                // necessary precondition to using the yielded value.
-                let self_mut = Pin::into_inner_unchecked(self);
-                *self_mut.0 = &mut *self_mut;
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        unsafe {
+            // Verify the context to ensure that this future is being polled by `new_async` rather
+            // than by the user.
+            let tracker = &mut *self.as_ref().0;
+            if tracker.cx_ptr == (cx as *const Context as *const ()) {
+                // Inform `new_async` that the future has been awaited. This enables the value
+                // written to `FortifyYielderData` to be used.
+                tracker.has_awaited = true;
             }
         }
         Poll::Pending
-    }
-}
-
-impl Drop for FortifyYielderFuture {
-    fn drop(&mut self) {
-        if !self.0.is_null() {
-            unsafe {
-                // Inform the context that the yielder future has been dropped. This indicates
-                // that it is no longer safe to use the yielded value.
-                *self.0 = std::ptr::null_mut();
-            }
-        }
     }
 }
 
