@@ -1,6 +1,6 @@
 [package]
 name = "fortify"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2021"
 authors = ["Dmitry Zamkov <dmitry94@gmail.com>"]
 description = "A simple and convenient way to bundle owned data with a borrowing type"
@@ -13,4 +13,4 @@ categories = ["memory-management", "rust-patterns"]
 members = ["derive"]
 
 [dependencies]
-fortify_derive = { path = "derive", version = "0.1.0" }
+fortify_derive = { path = "derive", version = "0.2.0" }

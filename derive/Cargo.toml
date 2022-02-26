@@ -1,6 +1,6 @@
 [package]
 name = "fortify_derive"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 authors = ["Dmitry Zamkov <dmitry94@gmail.com>"]
 description = "Derive macros for fortify"
