@@ -13,9 +13,8 @@ pub fn derive_lower(input: TokenStream) -> TokenStream {
     ex_generics.params.insert(0, GenericParam::Lifetime(LifetimeDef::new(ex_lifetime.clone())));
 
     // Substitute first lifetime parameter if it exists
-    match &mut alt_generics.params.first_mut() {
-        Some(GenericParam::Lifetime(def)) => *def = LifetimeDef::new(ex_lifetime.clone()),
-        _ => { } // No lifetime parameter to substitute
+    if let Some(GenericParam::Lifetime(def)) = &mut alt_generics.params.first_mut() {
+         *def = LifetimeDef::new(ex_lifetime.clone())
     }
     
     // Add lifetime bound to where clause

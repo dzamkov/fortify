@@ -14,6 +14,11 @@ use std::mem::{transmute_copy, ManuallyDrop};
 /// the trivial implementation will be used (i.e. `Target = Self`). Otherwise, it will operate
 /// on the first lifetime parameter in the generic parameters list. Deriving will fail if the
 /// type is not covariant in this parameter.
+/// 
+/// # Safety
+/// 
+/// The implementor is responsible for ensuring that for all `'a` where `T: 'a`,
+/// `<T as Lower<'a>>::Target` is a subtype of `T`.
 pub unsafe trait Lower<'a> {
     /// The type resulting from substituting the covariant lifetime parameters in `Self` for `'a`.
     type Target: Lower<'a, Target = Self::Target> + ?Sized + 'a;

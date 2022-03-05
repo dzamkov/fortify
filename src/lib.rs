@@ -72,7 +72,7 @@ impl<T> Fortify<T> {
     pub fn new(value: T) -> Self {
         Self {
             value: ManuallyDrop::new(value),
-            data_raw: 0 as *mut (),
+            data_raw: std::ptr::null_mut(),
             data_drop_fn: drop_nop,
         }
     }
@@ -176,6 +176,9 @@ impl<'a, T: Lower<'a, Target = T> + 'a> Fortify<T> {
 impl<'a, T: Lower<'a>> Fortify<T> {
     /// Immutably borrows the value inside a [`Fortify`]. For more general access to the wrapped
     /// value, see [`Fortify::with_ref`] and [`Fortify::with_mut`].
+    #[allow(clippy::should_implement_trait)]
+    // We would like to implement `std::borrow::Borrow`, but it's not possible to specify the
+    // lifetime correctly.
     pub fn borrow(&'a self) -> &'a <T as Lower<'a>>::Target {
         let value = &*self.value;
         unsafe { transmute_copy(&value) }
@@ -324,7 +327,7 @@ fn nop_waker() -> Waker {
         RawWaker::new(data, VTABLE)
     }
     unsafe fn nop(_: *const ()) {}
-    unsafe { Waker::from_raw(RawWaker::new(0 as *const (), VTABLE)) }
+    unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), VTABLE)) }
 }
 
 /// A helper interface used by the [`Fortify::new_async`] constructor.
@@ -333,7 +336,7 @@ pub struct FortifyYielder<T>(*mut FortifyYielderData<T>);
 impl<T> FortifyYielder<T> {
     /// Provides the [`Fortify`] value to this [`FortifyYielder`] and returns a [`Future`] that may
     /// be awaited to suspend execution.
-    pub fn yield_<'a>(self, value: Lowered<'a, T>) -> impl Future<Output = ()> + 'a {
+    pub fn yield_(self, value: Lowered<T>) -> impl Future<Output = ()> + '_ {
         unsafe {
             let target = &mut *self.0;
             target.value.write(value.value);
