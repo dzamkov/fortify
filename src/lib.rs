@@ -149,7 +149,7 @@ impl<'a, T: Lower<'a, Target = T> + 'a> Fortify<T> {
             tracker: FortifyYielderTracker {
                 cx_ptr: &cx as *const Context as *const (),
                 has_awaited: false,
-            }
+            },
         };
         let future = Box::into_raw(Box::new(cons(FortifyYielder(&mut data))));
         match Future::poll(unsafe { Pin::new_unchecked(&mut *future) }, &mut cx) {
@@ -170,6 +170,40 @@ impl<'a, T: Lower<'a, Target = T> + 'a> Fortify<T> {
                 }
             }
         }
+    }
+}
+
+impl<'a, T: Lower<'a, Target = T>> Fortify<&'a T> {
+    /// Creates a [`Fortify`] by taking ownership of a [`Box`] and wrapping a reference to
+    /// the value inside it.
+    ///
+    /// # Example
+    /// ```
+    /// use fortify::Fortify;
+    /// let value = Box::new(123);
+    /// let mut fortified: Fortify<&i32> = Fortify::new_box_ref(value);
+    /// assert_eq!(**fortified.borrow(), 123);
+    /// assert_eq!(fortified.with_inner(|x| *x), 123);
+    /// ```
+    pub fn new_box_ref(value: Box<T>) -> Self {
+        Fortify::new_box_dep(value, |inner| Lowered::new(&*inner))
+    }
+}
+
+impl<'a, T> Fortify<&'a mut T> {
+    /// Creates a [`Fortify`] by taking ownership of a [`Box`] and wrapping a mutable reference to
+    /// the value inside it.
+    ///
+    /// # Example
+    /// ```
+    /// use fortify::Fortify;
+    /// let value = Box::new(123);
+    /// let mut fortified: Fortify<&mut i32> = Fortify::new_box_mut(value);
+    /// fortified.with_mut(|v| **v *= 2);
+    /// assert_eq!(**fortified.borrow(), 246);
+    /// ```
+    pub fn new_box_mut(value: Box<T>) -> Self {
+        Fortify::new_box_dep(value, |inner| Lowered::new(inner))
     }
 }
 
@@ -207,38 +241,68 @@ impl<T: for<'a> Lower<'a>> Fortify<T> {
         let value = &mut *self.value;
         f(unsafe { transmute_copy(&value) })
     }
-}
 
-impl<'a, T: Lower<'a, Target = T>> Fortify<&'a T> {
-    /// Creates a [`Fortify`] by taking ownership of a [`Box`] and wrapping a reference to
-    /// the value inside it.
-    ///
-    /// # Example
-    /// ```
-    /// use fortify::Fortify;
-    /// let value = Box::new(123);
-    /// let mut fortified: Fortify<&i32> = Fortify::new_box_ref(value);
-    /// assert_eq!(**fortified.borrow(), 123);
-    /// ```
-    pub fn new_box_ref(value: Box<T>) -> Self {
-        Fortify::new_box_dep(value, |inner| Lowered::new(&*inner))
+    /// Executes a closure with the value stored inside this [`Fortify`], effectively destructing
+    /// the wrapper.
+    pub fn with_inner<F, R>(self, f: F) -> R
+    where
+        for<'a> <T as Lower<'a>>::Target: Sized,
+        F: for<'a> FnOnce(<T as Lower<'a>>::Target) -> R
+    {
+        self.split(|inner| (Lowered::new(()), f(Lowered::unwrap(inner)))).1
     }
 }
 
-impl<'a, T> Fortify<&'a mut T> {
-    /// Creates a [`Fortify`] by taking ownership of a [`Box`] and wrapping a mutable reference to
-    /// the value inside it.
-    ///
+impl<T> Fortify<T> {
+    /// Maps and splits this [`Fortify`] wrapper into a component that references its owned
+    /// data, and a component that doesn't. This is a generalization of both [`Fortify::map`] and
+    /// [`Fortify::with_inner`].
+    /// 
     /// # Example
     /// ```
-    /// use fortify::Fortify;
-    /// let value = Box::new(123);
-    /// let mut fortified: Fortify<&mut i32> = Fortify::new_box_mut(value);
-    /// fortified.with_mut(|v| **v *= 2);
-    /// assert_eq!(**fortified.borrow(), 246);
+    /// use fortify::*;
+    /// let fortified: Fortify<(&i32, i32)> = fortify! {
+    ///     let x = 12;
+    ///     yield (&x, 15);
+    /// };
+    /// let (x, y) = fortified.split(|inner| (Lowered::new(inner.0), inner.1));
+    /// assert_eq!(**x.borrow(), 12);
+    /// assert_eq!(y, 15);
     /// ```
-    pub fn new_box_mut(value: Box<T>) -> Self {
-        Fortify::new_box_dep(value, |inner| Lowered::new(inner))
+    pub fn split<'a, F, N, R>(mut self, f: F) -> (Fortify<N>, R)
+    where
+        T: 'a,
+        N: Lower<'a, Target = N> + 'a,
+        F: 'a + for<'b> FnOnce(Lowered<'b, T>) -> (Lowered<'b, N>, R),
+    {
+        let value = unsafe { ManuallyDrop::take(&mut self.value) };
+        let data_raw = self.data_raw;
+        let data_drop_fn = self.data_drop_fn;
+        std::mem::forget(self);
+        let (value, res) = f(Lowered {
+            value,
+            marker: std::marker::PhantomData,
+        });
+        (
+            Fortify {
+                value: ManuallyDrop::new(Lowered::unwrap(value)),
+                data_raw,
+                data_drop_fn,
+            },
+            res,
+        )
+    }
+
+    /// Constructs a new [`Fortify`] wrapper by applying a mapping function to the value stored
+    /// in this wrapper. The resulting [`Fortify`] will carry the exact same owned data as this
+    /// does.
+    pub fn map<'a, F, N>(self, f: F) -> Fortify<N>
+    where
+        T: 'a,
+        N: Lower<'a, Target = N> + 'a,
+        F: 'a + for<'b> FnOnce(Lowered<'b, T>) -> Lowered<'b, N>,
+    {
+        self.split(|inner| (f(inner), ())).0
     }
 }
 

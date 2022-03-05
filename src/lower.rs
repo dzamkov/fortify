@@ -169,7 +169,7 @@ impl_trivial_lower!(std::ffi::OsString);
 /// type inferencing.
 pub struct Lowered<'a, T: 'a> {
     pub(crate) value: T,
-    marker: PhantomData<&'a ()>,
+    pub(crate) marker: PhantomData<&'a ()>,
 }
 
 impl<'a, T: 'a> Lowered<'a, T> {
