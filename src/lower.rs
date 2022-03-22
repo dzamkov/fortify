@@ -14,9 +14,9 @@ use std::mem::{transmute_copy, ManuallyDrop};
 /// the trivial implementation will be used (i.e. `Target = Self`). Otherwise, it will operate
 /// on the first lifetime parameter in the generic parameters list. Deriving will fail if the
 /// type is not covariant in this parameter.
-/// 
+///
 /// # Safety
-/// 
+///
 /// The implementor is responsible for ensuring that for all `'a` where `T: 'a`,
 /// `<T as Lower<'a>>::Target` is a subtype of `T`.
 pub unsafe trait Lower<'a> {
@@ -182,6 +182,19 @@ impl<'a, T: 'a> Lowered<'a, T> {
     where
         'b: 'a,
         O: Lower<'b, Target = T> + 'a,
+    {
+        let value = unsafe { transmute_copy(&*ManuallyDrop::new(value)) };
+        Lowered {
+            value,
+            marker: PhantomData,
+        }
+    }
+
+    /// Constructs a [`Lowered`] from its wrapped value.
+    pub fn new_direct(value: <T as Lower<'a>>::Target) -> Self
+    where
+        T: Lower<'a>,
+        <T as Lower<'a>>::Target: Sized,
     {
         let value = unsafe { transmute_copy(&*ManuallyDrop::new(value)) };
         Lowered {
