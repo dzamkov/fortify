@@ -162,3 +162,10 @@ fn test_new_async_bad_await() {
         NopFuture.await;
     });
 }
+
+#[test]
+#[cfg(not(miri))]
+fn test_fail() {
+    let t = trybuild::TestCases::new();
+    t.compile_fail("tests/fail/*.rs");
+}

@@ -93,7 +93,7 @@ impl<'a, T: Refers<'a>> Fortify<T> {
     /// ```
     pub fn new_dep<O: 'a, C>(owned: O, cons: C) -> Self
     where
-        C: 'a + for<'b> FnOnce(&'b mut O) -> Lowered<'b, T>,
+        C: for<'b> FnOnce(&'b mut O) -> Lowered<'b, T>,
     {
         Self::new_box_dep(Box::new(owned), cons)
     }
@@ -103,7 +103,7 @@ impl<'a, T: Refers<'a>> Fortify<T> {
     /// constructed value must be wrapped in a [`Lowered`] wrapper.
     pub fn new_box_dep<O: 'a, C>(owned: Box<O>, cons: C) -> Self
     where
-        C: 'a + for<'b> FnOnce(&'b mut O) -> Lowered<'b, T>,
+        C: for<'b> FnOnce(&'b mut O) -> Lowered<'b, T>,
     {
         let owned = Box::into_raw(owned);
         let value = cons(unsafe { &mut *owned });
@@ -175,8 +175,7 @@ impl<'a, T: Refers<'a>> Fortify<T> {
     }
 }
 
-impl<'a, T: Lower<'a, Target = T>> Fortify<&'a T>
-{
+impl<'a, T: Lower<'a, Target = T>> Fortify<&'a T> {
     /// Creates a [`Fortify`] by taking ownership of a [`Box`] and wrapping a reference to
     /// the value inside it.
     ///
@@ -276,7 +275,7 @@ impl<'a, T: 'a> Fortify<T> {
     pub fn split<F, N, R>(mut self, f: F) -> (Fortify<N>, R)
     where
         N: Refers<'a>,
-        F: 'a + for<'b> FnOnce(Lowered<'b, T>) -> (Lowered<'b, N>, R),
+        F: for<'b> FnOnce(Lowered<'b, T>) -> (Lowered<'b, N>, R),
     {
         let value = unsafe { ManuallyDrop::take(&mut self.value) };
         let data_raw = self.data_raw;
@@ -302,7 +301,7 @@ impl<'a, T: 'a> Fortify<T> {
     pub fn map<F, N>(self, f: F) -> Fortify<N>
     where
         N: Refers<'a>,
-        F: 'a + for<'b> FnOnce(Lowered<'b, T>) -> Lowered<'b, N>,
+        F: for<'b> FnOnce(Lowered<'b, T>) -> Lowered<'b, N>,
     {
         self.split(|inner| (f(inner), ())).0
     }
@@ -310,13 +309,13 @@ impl<'a, T: 'a> Fortify<T> {
 
 /// Indicates that, if this type has a non-trivial implementation of [`Lower`], it references
 /// the lifetime `'a`. Thus, the bound `T: Refers<'a>` can be thought of as the inverse of `T: 'a`.
-/// 
+///
 /// This is used by various [`Fortify`]-constructing functions to ensure that the resulting
 /// wrapper does not outlive the external references it contains. This will be automatically
 /// implemented for any type that correctly implements [`Lower`].
-pub trait Refers<'a> { }
+pub trait Refers<'a> {}
 
-impl<'a, T: Lower<'a, Target = T>> Refers<'a> for T { }
+impl<'a, T: Lower<'a, Target = T>> Refers<'a> for T {}
 
 impl<T> From<T> for Fortify<T> {
     fn from(value: T) -> Self {
@@ -324,8 +323,7 @@ impl<T> From<T> for Fortify<T> {
     }
 }
 
-impl<'a, T: Lower<'a, Target = T>> From<Box<T>> for Fortify<&'a T>
-{
+impl<'a, T: Lower<'a, Target = T>> From<Box<T>> for Fortify<&'a T> {
     fn from(value: Box<T>) -> Self {
         Fortify::new_box_ref(value)
     }
