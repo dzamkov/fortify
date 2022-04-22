@@ -247,9 +247,10 @@ impl<T: for<'a> Lower<'a>> Fortify<T> {
     pub fn with_inner<F, R>(self, f: F) -> R
     where
         for<'a> <T as Lower<'a>>::Target: Sized,
-        F: for<'a> FnOnce(<T as Lower<'a>>::Target) -> R
+        F: for<'a> FnOnce(<T as Lower<'a>>::Target) -> R,
     {
-        self.split(|inner| (Lowered::new(()), f(Lowered::unwrap(inner)))).1
+        self.split(|inner| (Lowered::new(()), f(Lowered::unwrap(inner))))
+            .1
     }
 }
 
@@ -257,7 +258,7 @@ impl<T> Fortify<T> {
     /// Maps and splits this [`Fortify`] wrapper into a component that references its owned
     /// data, and a component that doesn't. This is a generalization of both [`Fortify::map`] and
     /// [`Fortify::with_inner`].
-    /// 
+    ///
     /// # Example
     /// ```
     /// use fortify::*;
@@ -355,6 +356,17 @@ where
     <T as Lower<'a>>::Target: Sized,
 {
     type Target = Fortify<<T as Lower<'a>>::Target>;
+}
+
+impl<T: Iterator> Iterator for Fortify<T>
+where
+    for<'a> T: Lower<'a>,
+    for<'a> <T as Lower<'a>>::Target: Iterator<Item = T::Item>,
+{
+    type Item = T::Item;
+    fn next(&mut self) -> Option<Self::Item> {
+        self.with_mut(|inner| inner.next())
+    }
 }
 
 impl<T> Drop for Fortify<T> {

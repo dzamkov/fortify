@@ -86,6 +86,16 @@ fn test_debug() {
     assert_eq!(format!("{:?}", fortified), "Test { a: 13, b: \"Foo\" }");
 }
 
+#[test]
+fn test_iter() {
+    let iter = Fortify::new_dep([1, 2, 3], |slice| Lowered::new(slice.iter().copied()));
+    let mut sum = 0;
+    for x in iter {
+        sum += x;
+    }
+    assert_eq!(sum, 6);
+}
+
 /// A helper for testing that a value is dropped.
 #[derive(Lower)]
 struct DropChecker<'a>(&'a Cell<u32>);

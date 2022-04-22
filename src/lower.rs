@@ -103,6 +103,20 @@ where
     );
 }
 
+unsafe impl<'a, 'b, T: Lower<'b>> Lower<'b> for std::slice::Iter<'a, T>
+where
+    <T as Lower<'b>>::Target: Sized,
+{
+    type Target = std::slice::Iter<'b, <T as Lower<'b>>::Target>;
+}
+
+unsafe impl<'a, I: Lower<'a>> Lower<'a> for std::iter::Copied<I>
+where
+    <I as Lower<'a>>::Target: Sized,
+{
+    type Target = std::iter::Copied<<I as Lower<'a>>::Target>;
+}
+
 macro_rules! impl_trivial_lower {
     ($t:ty) => {
         unsafe impl<'a> Lower<'a> for $t {
