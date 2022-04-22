@@ -1,0 +1,11 @@
+error[E0505]: cannot move out of `x` because it is borrowed
+ --> tests/fail/new_dep_outlives_closure.rs:7:10
+  |
+6 |     let fortified = Fortify::new_dep(obj, |_| Lowered::new(&*x));
+  |                                           ---               -- borrow occurs due to use in closure
+  |                                           |
+  |                                           borrow of `*x` occurs here
+7 |     drop(x);
+  |          ^ move out of `x` occurs here
+8 |     assert_eq!(**fortified.borrow(), 123);
+  |                  ------------------ borrow later used here

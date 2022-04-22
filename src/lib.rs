@@ -78,7 +78,7 @@ impl<T> Fortify<T> {
     }
 }
 
-impl<'a, T: Lower<'a, Target = T> + 'a> Fortify<T> {
+impl<'a, T: Refers<'a>> Fortify<T> {
     /// Creates a [`Fortify`] by explicitly providing its owned data and constructing its value
     /// from that using a closure. Note that for technical reasons, the constructed value must be
     /// wrapped in a [`Lowered`] wrapper.
@@ -93,7 +93,7 @@ impl<'a, T: Lower<'a, Target = T> + 'a> Fortify<T> {
     /// ```
     pub fn new_dep<O: 'a, C>(owned: O, cons: C) -> Self
     where
-        C: 'a + for<'b> FnOnce(&'b mut O) -> Lowered<'b, T>,
+        C: for<'b> FnOnce(&'b mut O) -> Lowered<'b, T>,
     {
         Self::new_box_dep(Box::new(owned), cons)
     }
@@ -103,12 +103,12 @@ impl<'a, T: Lower<'a, Target = T> + 'a> Fortify<T> {
     /// constructed value must be wrapped in a [`Lowered`] wrapper.
     pub fn new_box_dep<O: 'a, C>(owned: Box<O>, cons: C) -> Self
     where
-        C: 'a + for<'b> FnOnce(&'b mut O) -> Lowered<'b, T>,
+        C: for<'b> FnOnce(&'b mut O) -> Lowered<'b, T>,
     {
         let owned = Box::into_raw(owned);
         let value = cons(unsafe { &mut *owned });
         Self {
-            value: ManuallyDrop::new(Lowered::unwrap(value)),
+            value: ManuallyDrop::new(value.value),
             data_raw: owned as *mut (),
             data_drop_fn: drop_box_from_raw::<O>,
         }
@@ -159,8 +159,10 @@ impl<'a, T: Lower<'a, Target = T> + 'a> Fortify<T> {
             }
             Poll::Pending => {
                 if data.tracker.has_awaited {
-                    Fortify {
-                        value: ManuallyDrop::new(unsafe { data.value.assume_init() }),
+                    Self {
+                        value: ManuallyDrop::new(unsafe {
+                            transmute_copy(data.value.assume_init_ref())
+                        }),
                         data_raw: future as *mut (),
                         data_drop_fn: drop_box_from_raw::<F>,
                     }
@@ -186,11 +188,11 @@ impl<'a, T: Lower<'a, Target = T>> Fortify<&'a T> {
     /// assert_eq!(fortified.with_inner(|x| *x), 123);
     /// ```
     pub fn new_box_ref(value: Box<T>) -> Self {
-        Fortify::new_box_dep(value, |inner| Lowered::new(&*inner))
+        Self::new_box_dep(value, |inner| Lowered::new(&*inner))
     }
 }
 
-impl<'a, T> Fortify<&'a mut T> {
+impl<'a, T: 'a> Fortify<&'a mut T> {
     /// Creates a [`Fortify`] by taking ownership of a [`Box`] and wrapping a mutable reference to
     /// the value inside it.
     ///
@@ -203,7 +205,7 @@ impl<'a, T> Fortify<&'a mut T> {
     /// assert_eq!(**fortified.borrow(), 246);
     /// ```
     pub fn new_box_mut(value: Box<T>) -> Self {
-        Fortify::new_box_dep(value, |inner| Lowered::new(inner))
+        Self::new_box_dep(value, |inner| Lowered::new(inner))
     }
 }
 
@@ -254,7 +256,7 @@ impl<T: for<'a> Lower<'a>> Fortify<T> {
     }
 }
 
-impl<T> Fortify<T> {
+impl<'a, T: 'a> Fortify<T> {
     /// Maps and splits this [`Fortify`] wrapper into a component that references its owned
     /// data, and a component that doesn't. This is a generalization of both [`Fortify::map`] and
     /// [`Fortify::with_inner`].
@@ -270,11 +272,10 @@ impl<T> Fortify<T> {
     /// assert_eq!(**x.borrow(), 12);
     /// assert_eq!(y, 15);
     /// ```
-    pub fn split<'a, F, N, R>(mut self, f: F) -> (Fortify<N>, R)
+    pub fn split<F, N, R>(mut self, f: F) -> (Fortify<N>, R)
     where
-        T: 'a,
-        N: Lower<'a, Target = N> + 'a,
-        F: 'a + for<'b> FnOnce(Lowered<'b, T>) -> (Lowered<'b, N>, R),
+        N: Refers<'a>,
+        F: for<'b> FnOnce(Lowered<'b, T>) -> (Lowered<'b, N>, R),
     {
         let value = unsafe { ManuallyDrop::take(&mut self.value) };
         let data_raw = self.data_raw;
@@ -286,7 +287,7 @@ impl<T> Fortify<T> {
         });
         (
             Fortify {
-                value: ManuallyDrop::new(Lowered::unwrap(value)),
+                value: ManuallyDrop::new(value.value),
                 data_raw,
                 data_drop_fn,
             },
@@ -297,17 +298,26 @@ impl<T> Fortify<T> {
     /// Constructs a new [`Fortify`] wrapper by applying a mapping function to the value stored
     /// in this wrapper. The resulting [`Fortify`] will carry the exact same owned data as this
     /// does.
-    pub fn map<'a, F, N>(self, f: F) -> Fortify<N>
+    pub fn map<F, N>(self, f: F) -> Fortify<N>
     where
-        T: 'a,
-        N: Lower<'a, Target = N> + 'a,
-        F: 'a + for<'b> FnOnce(Lowered<'b, T>) -> Lowered<'b, N>,
+        N: Refers<'a>,
+        F: for<'b> FnOnce(Lowered<'b, T>) -> Lowered<'b, N>,
     {
         self.split(|inner| (f(inner), ())).0
     }
 }
 
-impl<'a, T: Lower<'a, Target = T> + 'a> From<T> for Fortify<T> {
+/// Indicates that, if this type has a non-trivial implementation of [`Lower`], it references
+/// the lifetime `'a`. Thus, the bound `T: Refers<'a>` can be thought of as the inverse of `T: 'a`.
+///
+/// This is used by various [`Fortify`]-constructing functions to ensure that the resulting
+/// wrapper does not outlive the external references it contains. This will be automatically
+/// implemented for any type that correctly implements [`Lower`].
+pub trait Refers<'a> {}
+
+impl<'a, T: Lower<'a, Target = T>> Refers<'a> for T {}
+
+impl<T> From<T> for Fortify<T> {
     fn from(value: T) -> Self {
         Fortify::new(value)
     }
@@ -325,7 +335,7 @@ impl<'a, T> From<Box<T>> for Fortify<&'a mut T> {
     }
 }
 
-impl<'a, T: Default + Lower<'a, Target = T> + 'a> Default for Fortify<T> {
+impl<T: Default> Default for Fortify<T> {
     fn default() -> Self {
         Fortify::new(T::default())
     }
@@ -353,9 +363,9 @@ where
 
 unsafe impl<'a, T: Lower<'a>> Lower<'a> for Fortify<T>
 where
-    <T as Lower<'a>>::Target: Sized,
+    T::Target: Sized,
 {
-    type Target = Fortify<<T as Lower<'a>>::Target>;
+    type Target = Fortify<T::Target>;
 }
 
 impl<T: Iterator> Iterator for Fortify<T>

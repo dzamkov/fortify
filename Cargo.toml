@@ -1,6 +1,6 @@
 [package]
 name = "fortify"
-version = "0.3.1"
+version = "0.4.0"
 edition = "2021"
 authors = ["Dmitry Zamkov <dmitry94@gmail.com>"]
 description = "A simple and convenient way to bundle owned data with a borrowing type"
@@ -14,3 +14,6 @@ members = ["derive"]
 
 [dependencies]
 fortify_derive = { path = "derive", version = "0.2.0" }
+
+[target.'cfg(not(miri))'.dev-dependencies]
+trybuild = "1.0"
